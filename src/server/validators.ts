@@ -3,10 +3,12 @@
 // SPEC §19: never trust the client. SPEC §8.5: re-validate every step of a path.
 
 import {
+  ATTACK_COST,
+  CLASS_STATS,
   MOVE_COST_DEFAULT,
   MOVE_COST_DIFFICULT,
 } from '../shared/constants.js'
-import { isInBounds, positionKey, positionsEqual } from '../shared/grid.js'
+import { isInBounds, manhattanDistance, positionKey, positionsEqual } from '../shared/grid.js'
 import type {
   GameAction,
   MatchState,
@@ -108,4 +110,40 @@ export function validateEndTurn(
   const pre = actorPreflight(state, actorId)
   if (pre) return { ok: false, code: pre }
   return { ok: true, cost: 0 }
+}
+
+export function validateAttack(
+  state: MatchState,
+  actorId: PlayerId,
+  action: Extract<GameAction, { kind: 'attack' }>,
+): ValidationResult {
+  const pre = actorPreflight(state, actorId)
+  if (pre) return { ok: false, code: pre }
+
+  const unitOrErr = ownUnit(state, actorId, action.unitId)
+  if (typeof unitOrErr === 'string') return { ok: false, code: unitOrErr }
+  const attacker = unitOrErr
+
+  const target = state.units.find((u) => u.id === action.targetId)
+  if (!target || target.hp <= 0) return { ok: false, code: 'unit_dead' }
+  if (target.ownerId === actorId) return { ok: false, code: 'bad_message' }
+
+  const remaining = state.energy[actorId] ?? 0
+  if (ATTACK_COST > remaining) return { ok: false, code: 'insufficient_energy' }
+
+  const dist = manhattanDistance(attacker.pos, target.pos)
+  const range = CLASS_STATS[attacker.classId].attackRange
+  if (dist > range) return { ok: false, code: 'out_of_range' }
+
+  // Shadow tile conceals the occupant from direct single-target attacks
+  // (SPEC §10). Area effects ignore this — we'll implement those at M5+.
+  const targetTile = state.grid.tiles[target.pos.y]?.[target.pos.x]
+  if (targetTile?.type === 'shadow') return { ok: false, code: 'target_untargetable' }
+
+  // LoS check for ranged classes. Until M7 pillars/walls are placed on
+  // real arenas, the stone grid has no LoS blockers and this always
+  // passes. When arenas land, add the Bresenham check in grid.ts.
+  // (SPEC §8.5: LoS is required for ranged attacks; melee is unconditional.)
+
+  return { ok: true, cost: ATTACK_COST }
 }

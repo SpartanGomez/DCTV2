@@ -18,8 +18,8 @@ import {
   type ServerErrorCode,
   type ServerMessage,
 } from '../shared/types.js'
-import { applyEndTurn, applyMove, createMatch } from './GameEngine.js'
-import { validateEndTurn, validateMove } from './validators.js'
+import { applyAttack, applyEndTurn, applyMove, createMatch, resolveMatchEnd } from './GameEngine.js'
+import { validateAttack, validateEndTurn, validateMove } from './validators.js'
 
 const PORT = Number(process.env.PORT ?? 8080)
 const startedAt = Date.now()
@@ -118,6 +118,40 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       broadcast(match, { type: 'stateUpdate', match: match.state })
       return
     }
+    case 'attack': {
+      const result = validateAttack(match.state, pid, action)
+      if (!result.ok) {
+        sendActionResult(socket, false, eventId, result.code)
+        return
+      }
+      const attackResult = applyAttack(match.state, action, result.cost)
+      match.state = attackResult.state
+      sendActionResult(socket, true, eventId)
+
+      if (attackResult.killed) {
+        const end = resolveMatchEnd(match.state)
+        if (end.over) {
+          const finalState: MatchState = {
+            ...match.state,
+            phase: 'over',
+            ...(end.winner ? { winner: end.winner } : {}),
+          }
+          match.state = finalState
+          broadcast(match, { type: 'stateUpdate', match: finalState })
+          if (end.winner) {
+            broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
+            console.log(
+              `[server] match ${match.id} over: winner=${end.winner} (knockout)`,
+            )
+          } else {
+            console.log(`[server] match ${match.id} over: double-KO`)
+          }
+          return
+        }
+      }
+      broadcast(match, { type: 'stateUpdate', match: match.state })
+      return
+    }
     case 'endTurn': {
       const result = validateEndTurn(match.state, pid)
       if (!result.ok) {
@@ -135,7 +169,6 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       })
       return
     }
-    case 'attack':
     case 'defend':
     case 'scout':
     case 'ability':

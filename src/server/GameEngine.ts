@@ -7,8 +7,13 @@
 import {
   BASE_ENERGY_PER_TURN,
   CLASS_STATS,
+  COVER_RUBBLE_REDUCTION,
+  DEFEND_REDUCTION,
+  FORTIFY_REDUCTION,
   GRID_HEIGHT,
   GRID_WIDTH,
+  HIGH_GROUND_DAMAGE_BONUS,
+  MIN_DIRECT_DAMAGE,
   TURN_TIMER_MS,
 } from '../shared/constants.js'
 import {
@@ -133,6 +138,85 @@ export function applyMove(
   const remaining = (state.energy[actorId] ?? 0) - cost
   const energy: Record<PlayerId, number> = { ...state.energy, [actorId]: remaining }
   return { ...state, units, energy }
+}
+
+export interface AttackResult {
+  state: MatchState
+  damage: number
+  killed: boolean
+}
+
+/**
+ * Apply a validated `attack`. Returns the next state plus the damage dealt
+ * and whether the target died. Caller runs `validateAttack` first.
+ *
+ * Damage formula (SPEC §12):
+ *   base = CLASS_STATS[attacker].baseAttackDamage
+ *   × (1 − defend)          — 0.5 for Defend, 0.25 for Shield Wall/Fortify
+ *   × (1 − rubble cover)    — 0.15 on Rubble
+ *   × (1 + high-ground)     — +25% when attacker elevation > target's
+ *   rounded half-up, clamped to MIN_DIRECT_DAMAGE.
+ */
+export function applyAttack(
+  state: MatchState,
+  action: Extract<GameAction, { kind: 'attack' }>,
+  cost: number,
+): AttackResult {
+  const attacker = state.units.find((u) => u.id === action.unitId)
+  const target = state.units.find((u) => u.id === action.targetId)
+  if (!attacker || !target) return { state, damage: 0, killed: false }
+
+  let damage = CLASS_STATS[attacker.classId].baseAttackDamage
+
+  const shieldWall = target.statuses.some((s) => s.kind === 'shield_wall')
+  const defending = target.statuses.some((s) => s.kind === 'defending')
+  if (shieldWall) damage *= 1 - FORTIFY_REDUCTION
+  else if (defending) damage *= 1 - DEFEND_REDUCTION
+
+  const targetTile = state.grid.tiles[target.pos.y]?.[target.pos.x]
+  if (targetTile?.type === 'rubble') damage *= 1 - COVER_RUBBLE_REDUCTION
+
+  const attackerTile = state.grid.tiles[attacker.pos.y]?.[attacker.pos.x]
+  if (attackerTile?.type === 'high_ground' && targetTile?.type !== 'high_ground') {
+    damage *= 1 + HIGH_GROUND_DAMAGE_BONUS
+  }
+
+  const finalDamage = Math.max(MIN_DIRECT_DAMAGE, Math.round(damage))
+  const nextHp = Math.max(0, target.hp - finalDamage)
+  const killed = nextHp <= 0
+
+  const units = state.units
+    .map((u) => (u.id === target.id ? { ...u, hp: nextHp } : u))
+    .filter((u) => u.hp > 0)
+
+  const actorEnergy = (state.energy[attacker.ownerId] ?? 0) - cost
+  const energy: Record<PlayerId, number> = { ...state.energy, [attacker.ownerId]: actorEnergy }
+
+  return { state: { ...state, units, energy }, damage: finalDamage, killed }
+}
+
+/**
+ * Determine match-end state. SPEC §8.7 covers double-KO and forfeit edges;
+ * M3 needs only the knockout case (survivor wins). Returns `{ over: true, winner }`
+ * when exactly one side still has living units, `{ over: false }` otherwise.
+ * A tie (both sides 0 living) is deferred to §8.7 handling in M5+.
+ */
+export function resolveMatchEnd(
+  state: MatchState,
+): { over: false } | { over: true; winner: PlayerId | null } {
+  const livingByOwner = new Map<PlayerId, number>()
+  for (const u of state.units) {
+    if (u.hp > 0) livingByOwner.set(u.ownerId, (livingByOwner.get(u.ownerId) ?? 0) + 1)
+  }
+  const owners = Array.from(livingByOwner.keys())
+  if (owners.length === 1) {
+    const winner = owners[0] ?? null
+    return { over: true, winner }
+  }
+  if (owners.length === 0) {
+    return { over: true, winner: null }
+  }
+  return { over: false }
 }
 
 export interface EndTurnResult {

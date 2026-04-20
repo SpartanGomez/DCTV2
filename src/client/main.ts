@@ -6,8 +6,10 @@ import { connect, type NetworkClient } from './network.js'
 import { Renderer } from './Renderer.js'
 import { SceneManager } from './SceneManager.js'
 import { MatchScene } from './scenes/MatchScene.js'
-import { orthogonalPath } from '../shared/grid.js'
-import type { PlayerId, Position } from '../shared/types.js'
+import { ResultsScene } from './scenes/ResultsScene.js'
+import { manhattanDistance, orthogonalPath } from '../shared/grid.js'
+import { CLASS_STATS } from '../shared/constants.js'
+import type { PlayerId, Position, UnitId } from '../shared/types.js'
 
 declare global {
   interface Window {
@@ -19,6 +21,7 @@ declare global {
     __dct?: {
       move: (x: number, y: number) => void
       endTurn: () => void
+      attackNearest: () => void
     }
   }
 }
@@ -75,6 +78,20 @@ async function main(): Promise<void> {
     const state = activeScene.currentState
     if (state.currentTurn !== myPlayerId) return
     if (unit.pos.x === target.x && unit.pos.y === target.y) return
+    // If target is occupied by an enemy in attack range, send attack instead.
+    const enemyHere = state.units.find(
+      (u) => u.ownerId !== myPlayerId && u.hp > 0 && u.pos.x === target.x && u.pos.y === target.y,
+    )
+    if (enemyHere) {
+      const range = CLASS_STATS[unit.classId].attackRange
+      if (manhattanDistance(unit.pos, enemyHere.pos) <= range) {
+        net.send({
+          type: 'action',
+          action: { kind: 'attack', unitId: unit.id, targetId: enemyHere.id },
+        })
+      }
+      return
+    }
     const path = orthogonalPath(unit.pos, target)
     if (path.length === 0) return
     net.send({ type: 'action', action: { kind: 'move', unitId: unit.id, path } })
@@ -84,6 +101,21 @@ async function main(): Promise<void> {
     if (!activeScene) return
     if (activeScene.currentState.currentTurn !== myPlayerId) return
     net.send({ type: 'action', action: { kind: 'endTurn' } })
+  }
+
+  const sendAttackNearest = (): void => {
+    if (!activeScene) return
+    const unit = activeScene.getOwnUnit()
+    if (!unit) return
+    const state = activeScene.currentState
+    const enemies = state.units.filter((u) => u.ownerId !== myPlayerId && u.hp > 0)
+    const first = enemies[0]
+    if (!first) return
+    const nearest = enemies.reduce((best, u) =>
+      manhattanDistance(u.pos, unit.pos) < manhattanDistance(best.pos, unit.pos) ? u : best,
+    first)
+    const targetId: UnitId = nearest.id
+    net.send({ type: 'action', action: { kind: 'attack', unitId: unit.id, targetId } })
   }
 
   window.addEventListener('keydown', (ev) => {
@@ -104,6 +136,7 @@ async function main(): Promise<void> {
       endTurn: () => {
         net.send({ type: 'action', action: { kind: 'endTurn' } })
       },
+      attackNearest: sendAttackNearest,
     }
   }
 
@@ -142,6 +175,17 @@ async function main(): Promise<void> {
 
   net.on('error', (msg) => {
     console.error(`[client] server error: ${msg.code} — ${msg.reason}`)
+  })
+
+  net.on('matchOver', (msg) => {
+    const my = myPlayerId
+    if (!my) return
+    const outcome = msg.winner === my ? 'VICTORY' : 'DEFEAT'
+    console.log(
+      `[client] matchOver: winner=${msg.winner} outcome=${outcome} surrender=${String(msg.surrender ?? false)}`,
+    )
+    scenes.show(new ResultsScene(msg.winner, my))
+    activeScene = null
   })
 }
 
