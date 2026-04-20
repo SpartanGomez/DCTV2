@@ -20,3 +20,26 @@ export function positionKey(pos: Position): string {
 export function positionsEqual(a: Position, b: Position): boolean {
   return a.x === b.x && a.y === b.y
 }
+
+/**
+ * Orthogonal L-shaped path from `from` to `to`: move along x first, then y.
+ * Returns the sequence of tiles walked (not including `from`). Open-grid
+ * version — callers must re-validate against terrain + occupancy. M7 replaces
+ * this with an A* respecting difficult terrain and impassable tiles.
+ */
+export function orthogonalPath(from: Position, to: Position): Position[] {
+  const path: Position[] = []
+  let x = from.x
+  let y = from.y
+  const sx = Math.sign(to.x - x)
+  while (x !== to.x) {
+    x += sx
+    path.push({ x, y })
+  }
+  const sy = Math.sign(to.y - y)
+  while (y !== to.y) {
+    y += sy
+    path.push({ x, y })
+  }
+  return path
+}

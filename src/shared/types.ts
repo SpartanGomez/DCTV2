@@ -173,15 +173,36 @@ export type ClientMessage =
   | { type: 'spectate'; matchId: MatchId }
   | { type: 'leaveSpectator' }
 
+/** SPEC §19 error codes. Do not invent new codes — add them here first. */
+export type ServerErrorCode =
+  | 'not_your_turn'
+  | 'insufficient_energy'
+  | 'out_of_range'
+  | 'no_line_of_sight'
+  | 'target_untargetable'
+  | 'invalid_path'
+  | 'tile_impassable'
+  | 'tile_occupied'
+  | 'duplicate_trap'
+  | 'self_kill_prevented'
+  | 'unit_dead'
+  | 'unit_not_owned'
+  | 'match_not_active'
+  | 'rate_limited'
+  | 'bad_message'
+  | 'session_expired'
+  | 'server_busy'
+  | 'server_error'
+
 export type ServerMessage =
   | { type: 'hello'; serverVersion: string; sessionToken: string }
-  | { type: 'error'; code: string; reason: string }
+  | { type: 'error'; code: ServerErrorCode; reason: string }
   | { type: 'tournamentUpdate'; bracket: BracketState }
   | { type: 'matchStart'; match: MatchState; youAre: PlayerId }
   /** Fog-filtered per recipient. */
   | { type: 'stateUpdate'; match: MatchState }
   | { type: 'turnStart'; playerId: PlayerId; endsAt: number }
-  | { type: 'actionResult'; ok: boolean; error?: string; eventId?: string }
+  | { type: 'actionResult'; ok: boolean; error?: ServerErrorCode; eventId?: string }
   | { type: 'matchOver'; winner: PlayerId; final: MatchState; surrender?: boolean }
   | { type: 'perkOptions'; perks: PerkId[] }
   /** Full state for spectators. */
