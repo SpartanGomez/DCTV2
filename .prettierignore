@@ -1,0 +1,9 @@
+dist
+node_modules
+.vite
+playwright-report
+test-results
+coverage
+package-lock.json
+SPEC.md
+ART_SPEC.md
