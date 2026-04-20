@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
-import { SERVER_VERSION } from '../shared/constants.js'
+import { SERVER_VERSION, TURN_TIMER_MS } from '../shared/constants.js'
 import {
   matchId as makeMatchId,
   playerId as makePlayerId,
@@ -24,6 +24,16 @@ import { validateAttack, validateEndTurn, validateMove } from './validators.js'
 const PORT = Number(process.env.PORT ?? 8080)
 const startedAt = Date.now()
 
+/**
+ * Per-turn ms budget. Production uses the locked SPEC value; tests and
+ * local dev can shrink it via `DCT_TURN_TIMER_MS` to keep smoke cycles
+ * fast (SPEC §25.1 ergonomics — dev cheats never override in prod).
+ */
+const TURN_TIMER =
+  process.env.NODE_ENV !== 'production' && process.env.DCT_TURN_TIMER_MS
+    ? Number(process.env.DCT_TURN_TIMER_MS)
+    : TURN_TIMER_MS
+
 interface WaitingPlayer {
   id: PlayerId
   socket: WebSocket
@@ -33,6 +43,7 @@ interface ActiveMatch {
   id: MatchId
   state: MatchState
   sockets: Map<PlayerId, WebSocket>
+  turnTimer: NodeJS.Timeout | null
 }
 
 const waiting: WaitingPlayer[] = []
@@ -65,17 +76,56 @@ function sendActionResult(
   send(socket, msg)
 }
 
+function clearTurnTimer(match: ActiveMatch): void {
+  if (match.turnTimer) {
+    clearTimeout(match.turnTimer)
+    match.turnTimer = null
+  }
+}
+
+/**
+ * Schedule the auto-end-turn for the current turn. SPEC §19: server is
+ * authoritative on turn expiry — clients display the countdown derived
+ * from `turnEndsAt` but never decide timeouts themselves.
+ */
+function scheduleTurnTimer(match: ActiveMatch): void {
+  clearTurnTimer(match)
+  if (match.state.phase !== 'active') return
+  const ms = Math.max(0, match.state.turnEndsAt - Date.now())
+  match.turnTimer = setTimeout(() => {
+    match.turnTimer = null
+    if (match.state.phase !== 'active') return
+    const result = applyEndTurn(match.state, Date.now(), TURN_TIMER)
+    match.state = result.state
+    broadcast(match, { type: 'stateUpdate', match: match.state })
+    broadcast(match, {
+      type: 'turnStart',
+      playerId: result.nextPlayer,
+      endsAt: match.state.turnEndsAt,
+    })
+    console.log(
+      `[server] match ${match.id} turn ${String(match.state.turnNumber)} auto-ended (timeout) \u2192 ${result.nextPlayer}`,
+    )
+    scheduleTurnTimer(match)
+  }, ms)
+}
+
 function pairIfReady(): void {
   while (waiting.length >= 2) {
     const a = waiting.shift()
     const b = waiting.shift()
     if (!a || !b) return
     const mid = makeMatchId(randomUUID())
-    const state = createMatch({ matchId: mid, playerA: a.id, playerB: b.id })
+    const state = createMatch({
+      matchId: mid,
+      playerA: a.id,
+      playerB: b.id,
+      turnTimerMs: TURN_TIMER,
+    })
     const sockets = new Map<PlayerId, WebSocket>()
     sockets.set(a.id, a.socket)
     sockets.set(b.id, b.socket)
-    const match: ActiveMatch = { id: mid, state, sockets }
+    const match: ActiveMatch = { id: mid, state, sockets, turnTimer: null }
     matches.set(mid, match)
     playerToMatch.set(a.id, mid)
     playerToMatch.set(b.id, mid)
@@ -84,6 +134,7 @@ function pairIfReady(): void {
     console.log(
       `[server] match ${mid} started: ${a.id} vs ${b.id}, first turn ${state.currentTurn}`,
     )
+    scheduleTurnTimer(match)
   }
 }
 
@@ -93,6 +144,7 @@ function removeWaiting(id: PlayerId): void {
 }
 
 function dropMatch(match: ActiveMatch): void {
+  clearTurnTimer(match)
   for (const pid of match.sockets.keys()) playerToMatch.delete(pid)
   matches.delete(match.id)
 }
@@ -131,6 +183,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       if (attackResult.killed) {
         const end = resolveMatchEnd(match.state)
         if (end.over) {
+          clearTurnTimer(match)
           const finalState: MatchState = {
             ...match.state,
             phase: 'over',
@@ -158,7 +211,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
         sendActionResult(socket, false, eventId, result.code)
         return
       }
-      const next = applyEndTurn(match.state, Date.now())
+      const next = applyEndTurn(match.state, Date.now(), TURN_TIMER)
       match.state = next.state
       sendActionResult(socket, true, eventId)
       broadcast(match, { type: 'stateUpdate', match: match.state })
@@ -167,6 +220,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
         playerId: next.nextPlayer,
         endsAt: match.state.turnEndsAt,
       })
+      scheduleTurnTimer(match)
       return
     }
     case 'defend':

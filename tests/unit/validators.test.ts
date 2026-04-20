@@ -183,4 +183,10 @@ describe('applyMove + applyEndTurn — integration', () => {
     const r = validateEndTurn(state, PB)
     expect(r).toEqual({ ok: false, code: 'not_your_turn' })
   })
+
+  it('endTurn respects turnTimerMs override', () => {
+    const state = fresh()
+    const result = applyEndTurn(state, 10_000, 1_500)
+    expect(result.state.turnEndsAt).toBe(10_000 + 1_500)
+  })
 })

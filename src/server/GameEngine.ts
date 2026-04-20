@@ -45,6 +45,12 @@ export interface CreateMatchInput {
   now?: () => number
   /** Injectable RNG for deterministic tests. Defaults to Math.random. */
   rng?: () => number
+  /**
+   * Per-turn ms budget. Defaults to the locked SPEC value (30_000).
+   * Tests and dev (`DCT_TURN_TIMER_MS`) can shorten this; never override
+   * in production.
+   */
+  turnTimerMs?: number
 }
 
 export function createMatch(input: CreateMatchInput): MatchState {
@@ -53,6 +59,7 @@ export function createMatch(input: CreateMatchInput): MatchState {
   const rng = input.rng ?? Math.random
   const firstTurn = input.firstTurn ?? (rng() < 0.5 ? 'A' : 'B')
   const now = (input.now ?? Date.now)()
+  const turnTimerMs = input.turnTimerMs ?? TURN_TIMER_MS
 
   const tiles: TerrainTile[][] = []
   for (let y = 0; y < GRID_HEIGHT; y++) {
@@ -109,7 +116,7 @@ export function createMatch(input: CreateMatchInput): MatchState {
     ashClouds: [],
     currentTurn,
     turnNumber: 1,
-    turnEndsAt: now + TURN_TIMER_MS,
+    turnEndsAt: now + turnTimerMs,
     energy,
     maxEnergy,
     perks,
@@ -228,7 +235,11 @@ export interface EndTurnResult {
  * Apply a validated `endTurn`: hand the turn to the other player and refresh
  * their energy. Turn timer resets from the injected clock.
  */
-export function applyEndTurn(state: MatchState, now: number): EndTurnResult {
+export function applyEndTurn(
+  state: MatchState,
+  now: number,
+  turnTimerMs: number = TURN_TIMER_MS,
+): EndTurnResult {
   const players = Array.from(new Set(state.units.map((u) => u.ownerId)))
   const next = players.find((p) => p !== state.currentTurn) ?? state.currentTurn
   const refreshed = state.maxEnergy[next] ?? BASE_ENERGY_PER_TURN
@@ -238,7 +249,7 @@ export function applyEndTurn(state: MatchState, now: number): EndTurnResult {
       ...state,
       currentTurn: next,
       turnNumber: state.turnNumber + 1,
-      turnEndsAt: now + TURN_TIMER_MS,
+      turnEndsAt: now + turnTimerMs,
       energy,
     },
     nextPlayer: next,
