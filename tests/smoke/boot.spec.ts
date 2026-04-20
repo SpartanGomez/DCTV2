@@ -122,7 +122,7 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
     const msB = waitForMatchStart(pageB)
     await pageA.goto('/')
     await pageB.goto('/')
-    const [infoA, infoB] = await Promise.all([msA, msB])
+    const [infoA] = await Promise.all([msA, msB])
 
     const attacker = infoA.currentTurn === infoA.youAre ? pageA : pageB
     const victim = attacker === pageA ? pageB : pageA
