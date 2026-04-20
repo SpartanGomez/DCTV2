@@ -111,8 +111,8 @@ If a script doesn't exist, add it — don't invent a new name. The three gate sc
 ├── .gitignore                    # node_modules, dist, vite.config.ts.timestamp-*, .env, .DS_Store
 ├── public/
 │   ├── sprites/                  # The only sprite folder. Do not create a second one.
-│   ├── audio/
-│   └── index.html
+│   └── audio/
+├── index.html                    # Vite entry — must live at project root.
 ├── src/
 │   ├── shared/                   # Client + server import from here only.
 │   │   ├── types.ts              # Single source of truth for all contracts.
@@ -160,6 +160,8 @@ If a script doesn't exist, add it — don't invent a new name. The three gate sc
 ├── package.json
 └── vite.config.ts
 ```
+
+`index.html` lives at the project root per Vite convention; `public/` holds static assets only (sprites, audio).
 
 Anything not in this tree needs a PR conversation about why it exists. If you want a new top-level markdown doc, the answer is usually "put it in the PR description instead."
 
