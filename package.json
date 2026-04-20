@@ -1,0 +1,41 @@
+{
+  "name": "dark-council-tactic",
+  "version": "0.1.0",
+  "private": true,
+  "description": "1v1 tactical combat game for Vibe Jam 2026.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -n client,server -c blue,green \"npm:dev:client\" \"npm:dev:server\"",
+    "dev:client": "vite",
+    "dev:server": "tsx watch src/server/index.ts",
+    "start:server": "tsx src/server/index.ts",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test:smoke": "playwright test",
+    "lint": "eslint src tests",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "pixi.js": "^8.6.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "concurrently": "^9.1.0",
+    "eslint": "^9.15.0",
+    "prettier": "^3.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.18.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.0"
+  }
+}
