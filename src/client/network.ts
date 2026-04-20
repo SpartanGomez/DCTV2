@@ -1,9 +1,24 @@
 // src/client/network.ts
-// M0: minimum viable WS client. M1 adds request/response routing, reconnect, etc.
+// WS client with typed message routing. `connect` resolves only after the
+// server's `hello` frame arrives; subsequent messages dispatch to listeners
+// registered via `on(type, fn)`.
 
-import type { ServerMessage } from '../shared/types.js'
+import type { ClientMessage, ServerMessage } from '../shared/types.js'
 
 const DEFAULT_WS_URL = 'ws://localhost:8080'
+
+type HelloMessage = Extract<ServerMessage, { type: 'hello' }>
+
+export interface NetworkClient {
+  readonly sessionToken: string
+  readonly serverVersion: string
+  on<T extends ServerMessage['type']>(
+    type: T,
+    listener: (msg: Extract<ServerMessage, { type: T }>) => void,
+  ): () => void
+  send(message: ClientMessage): void
+  close(): void
+}
 
 function isServerMessage(v: unknown): v is ServerMessage {
   if (typeof v !== 'object' || v === null) return false
@@ -11,51 +26,99 @@ function isServerMessage(v: unknown): v is ServerMessage {
   return typeof v.type === 'string'
 }
 
-export interface NetworkConnection {
-  socket: WebSocket
-  hello: Extract<ServerMessage, { type: 'hello' }>
+class NetworkClientImpl implements NetworkClient {
+  readonly sessionToken: string
+  readonly serverVersion: string
+  private readonly listeners = new Map<string, Set<(m: ServerMessage) => void>>()
+
+  constructor(
+    private readonly socket: WebSocket,
+    hello: HelloMessage,
+  ) {
+    this.sessionToken = hello.sessionToken
+    this.serverVersion = hello.serverVersion
+    socket.addEventListener('message', (ev) => {
+      this.handleMessage(ev)
+    })
+  }
+
+  on<T extends ServerMessage['type']>(
+    type: T,
+    listener: (msg: Extract<ServerMessage, { type: T }>) => void,
+  ): () => void {
+    let set = this.listeners.get(type)
+    if (!set) {
+      set = new Set()
+      this.listeners.set(type, set)
+    }
+    const bucket = set
+    const generic = listener as (m: ServerMessage) => void
+    bucket.add(generic)
+    return () => {
+      bucket.delete(generic)
+    }
+  }
+
+  send(message: ClientMessage): void {
+    this.socket.send(JSON.stringify(message))
+  }
+
+  close(): void {
+    this.socket.close()
+  }
+
+  private handleMessage(ev: MessageEvent): void {
+    if (typeof ev.data !== 'string') return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(ev.data)
+    } catch {
+      return
+    }
+    if (!isServerMessage(parsed)) return
+    const set = this.listeners.get(parsed.type)
+    if (!set) return
+    for (const handler of set) handler(parsed)
+  }
 }
 
-export function connect(url: string = DEFAULT_WS_URL): Promise<NetworkConnection> {
+export function connect(url: string = DEFAULT_WS_URL): Promise<NetworkClient> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url)
 
-    const onFail = (reason: string): void => {
-      socket.removeEventListener('message', onMessage)
+    const fail = (reason: string): void => {
+      socket.removeEventListener('message', onHello)
       socket.removeEventListener('error', onError)
+      socket.close()
       reject(new Error(reason))
     }
 
-    const onMessage = (ev: MessageEvent): void => {
+    const onHello = (ev: MessageEvent): void => {
       if (typeof ev.data !== 'string') {
-        onFail('expected text frame, got binary')
+        fail('expected text frame')
         return
       }
       let parsed: unknown
       try {
         parsed = JSON.parse(ev.data)
       } catch {
-        onFail('malformed JSON frame')
+        fail('malformed JSON')
         return
       }
-      if (!isServerMessage(parsed)) {
-        onFail('frame is not a ServerMessage')
+      if (!isServerMessage(parsed) || parsed.type !== 'hello') {
+        fail('expected hello')
         return
       }
-      if (parsed.type !== 'hello') {
-        onFail(`expected hello, got ${parsed.type}`)
-        return
-      }
-      socket.removeEventListener('message', onMessage)
+      socket.removeEventListener('message', onHello)
       socket.removeEventListener('error', onError)
-      resolve({ socket, hello: parsed })
+      resolve(new NetworkClientImpl(socket, parsed))
     }
 
     const onError = (): void => {
-      onFail('websocket error')
+      fail('websocket error')
     }
 
-    socket.addEventListener('message', onMessage)
+    socket.addEventListener('message', onHello)
     socket.addEventListener('error', onError)
   })
 }
