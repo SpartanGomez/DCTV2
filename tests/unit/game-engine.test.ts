@@ -64,11 +64,44 @@ describe('createMatch', () => {
     expect(m.maxEnergy[PB]).toBe(BASE_ENERGY_PER_TURN)
   })
 
-  it('starts on turn 1 with firstTurn=A by default', () => {
+  it('starts on turn 1, phase active, currentTurn == one of the two players', () => {
     const m = createMatch({ matchId: MID, playerA: PA, playerB: PB, now: () => 0 })
     expect(m.turnNumber).toBe(1)
-    expect(m.currentTurn).toBe(PA)
     expect(m.phase).toBe('active')
+    expect([PA, PB]).toContain(m.currentTurn)
+  })
+
+  it('honors explicit firstTurn=A', () => {
+    const m = createMatch({
+      matchId: MID,
+      playerA: PA,
+      playerB: PB,
+      firstTurn: 'A',
+      now: () => 0,
+    })
+    expect(m.currentTurn).toBe(PA)
+  })
+
+  it('coin flip picks A when rng() < 0.5', () => {
+    const m = createMatch({
+      matchId: MID,
+      playerA: PA,
+      playerB: PB,
+      now: () => 0,
+      rng: () => 0.1,
+    })
+    expect(m.currentTurn).toBe(PA)
+  })
+
+  it('coin flip picks B when rng() >= 0.5', () => {
+    const m = createMatch({
+      matchId: MID,
+      playerA: PA,
+      playerB: PB,
+      now: () => 0,
+      rng: () => 0.9,
+    })
+    expect(m.currentTurn).toBe(PB)
   })
 
   it('honors explicit firstTurn=B', () => {
