@@ -64,6 +64,8 @@ export class MatchScene implements Scene {
   private readonly youAre: PlayerId
   private readonly handlers: MatchSceneHandlers
   private hudText: Text | null = null
+  private tickFn: (() => void) | null = null
+  private boundRenderer: Renderer | null = null
 
   constructor(state: MatchState, youAre: PlayerId, handlers: MatchSceneHandlers) {
     this.state = state
@@ -77,6 +79,11 @@ export class MatchScene implements Scene {
     this.drawGrid()
     this.drawUnits()
     this.drawHud(renderer)
+    this.tickFn = () => {
+      this.refreshHud()
+    }
+    renderer.app.ticker.add(this.tickFn)
+    this.boundRenderer = renderer
   }
 
   update(state: MatchState): void {
@@ -89,6 +96,11 @@ export class MatchScene implements Scene {
   }
 
   destroy(): void {
+    if (this.tickFn && this.boundRenderer) {
+      this.boundRenderer.app.ticker.remove(this.tickFn)
+    }
+    this.tickFn = null
+    this.boundRenderer = null
     this.root.destroy({ children: true })
   }
 
@@ -199,6 +211,8 @@ export class MatchScene implements Scene {
     const energy = this.state.energy[this.state.currentTurn] ?? 0
     const max = this.state.maxEnergy[this.state.currentTurn] ?? 0
     const turn = your ? 'YOUR TURN' : 'OPPONENT TURN'
-    return `${turn} — turn ${String(this.state.turnNumber)} — energy ${String(energy)}/${String(max)}   [E] end turn`
+    const remainingMs = Math.max(0, this.state.turnEndsAt - Date.now())
+    const seconds = Math.ceil(remainingMs / 1000)
+    return `${turn} — turn ${String(this.state.turnNumber)} — ${String(seconds)}s — energy ${String(energy)}/${String(max)}   [E] end turn`
   }
 }

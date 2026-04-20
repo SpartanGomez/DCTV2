@@ -120,6 +120,17 @@ describe('createMatch', () => {
     expect(m.turnEndsAt).toBe(1_000_000 + TURN_TIMER_MS)
   })
 
+  it('honors turnTimerMs override (M4 dev ergonomics / tests)', () => {
+    const m = createMatch({
+      matchId: MID,
+      playerA: PA,
+      playerB: PB,
+      now: () => 500,
+      turnTimerMs: 2_000,
+    })
+    expect(m.turnEndsAt).toBe(500 + 2_000)
+  })
+
   it('starts with empty pickup/trap/ashCloud arrays', () => {
     const m = createMatch({ matchId: MID, playerA: PA, playerB: PB, now: () => 0 })
     expect(m.pickups).toEqual([])
