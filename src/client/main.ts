@@ -1,11 +1,27 @@
 // src/client/main.ts
 // Boot: mount PixiJS into #app, open WS to :8080, on matchStart show MatchScene.
-// M1 scope: the second tab triggers the pairing; both tabs then render the match.
+// M2: click a tile to move my unit; press E to end my turn.
 
-import { connect } from './network.js'
+import { connect, type NetworkClient } from './network.js'
 import { Renderer } from './Renderer.js'
 import { SceneManager } from './SceneManager.js'
 import { MatchScene } from './scenes/MatchScene.js'
+import { orthogonalPath } from '../shared/grid.js'
+import type { PlayerId, Position } from '../shared/types.js'
+
+declare global {
+  interface Window {
+    /**
+     * Test-only handle for Playwright smoke. Present in dev builds only;
+     * never referenced by production code. If you find yourself using this
+     * from non-test code, stop.
+     */
+    __dct?: {
+      move: (x: number, y: number) => void
+      endTurn: () => void
+    }
+  }
+}
 
 function setBootText(text: string): void {
   const boot = document.getElementById('boot')
@@ -37,7 +53,7 @@ async function main(): Promise<void> {
 
   const scenes = new SceneManager(renderer)
 
-  let net
+  let net: NetworkClient
   try {
     net = await connect()
   } catch (err: unknown) {
@@ -49,19 +65,79 @@ async function main(): Promise<void> {
   console.log(`[client] hello from server (version ${net.serverVersion})`)
   setBootText('Dark Council Tactic — waiting for opponent…')
 
+  let activeScene: MatchScene | null = null
+  let myPlayerId: PlayerId | null = null
+
+  const sendMove = (target: Position): void => {
+    if (!activeScene) return
+    const unit = activeScene.getOwnUnit()
+    if (!unit) return
+    const state = activeScene.currentState
+    if (state.currentTurn !== myPlayerId) return
+    if (unit.pos.x === target.x && unit.pos.y === target.y) return
+    const path = orthogonalPath(unit.pos, target)
+    if (path.length === 0) return
+    net.send({ type: 'action', action: { kind: 'move', unitId: unit.id, path } })
+  }
+
+  const sendEndTurn = (): void => {
+    if (!activeScene) return
+    if (activeScene.currentState.currentTurn !== myPlayerId) return
+    net.send({ type: 'action', action: { kind: 'endTurn' } })
+  }
+
+  window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'e' || ev.key === 'E') sendEndTurn()
+  })
+
+  if (import.meta.env.DEV) {
+    // Test-only hook. Bypasses client-side UX guards so smoke tests can
+    // verify server-authoritative rejection paths (e.g. not_your_turn).
+    window.__dct = {
+      move: (x, y) => {
+        const unit = activeScene?.getOwnUnit()
+        if (!unit) return
+        const path = orthogonalPath(unit.pos, { x, y })
+        if (path.length === 0) return
+        net.send({ type: 'action', action: { kind: 'move', unitId: unit.id, path } })
+      },
+      endTurn: () => {
+        net.send({ type: 'action', action: { kind: 'endTurn' } })
+      },
+    }
+  }
+
   net.on('matchStart', (msg) => {
+    myPlayerId = msg.youAre
     console.log(
-      `[client] matchStart: match=${msg.match.matchId} units=${String(msg.match.units.length)} youAre=${msg.youAre}`,
+      `[client] matchStart: match=${msg.match.matchId} units=${String(msg.match.units.length)} youAre=${msg.youAre} currentTurn=${msg.match.currentTurn}`,
     )
     hideBoot()
-    scenes.show(new MatchScene(msg.match, msg.youAre))
+    activeScene = new MatchScene(msg.match, msg.youAre, { onTileClick: sendMove })
+    scenes.show(activeScene)
   })
 
   net.on('stateUpdate', (msg) => {
-    const active = scenes.active
-    if (active instanceof MatchScene) {
-      active.update(msg.match)
+    if (activeScene) activeScene.update(msg.match)
+    const my = msg.match.units.find((u) => u.ownerId === myPlayerId)
+    const foe = msg.match.units.find((u) => u.ownerId !== myPlayerId)
+    const fmt = (p: { x: number; y: number } | undefined) =>
+      p ? `(${String(p.x)},${String(p.y)})` : '—'
+    console.log(
+      `[client] stateUpdate: turn=${msg.match.currentTurn} turnN=${String(msg.match.turnNumber)} myPos=${fmt(my?.pos)} foePos=${fmt(foe?.pos)}`,
+    )
+  })
+
+  net.on('actionResult', (msg) => {
+    if (!msg.ok) {
+      console.log(`[client] actionResult: rejected (${msg.error ?? 'unknown'})`)
+    } else {
+      console.log(`[client] actionResult: ok eventId=${msg.eventId ?? ''}`)
     }
+  })
+
+  net.on('turnStart', (msg) => {
+    console.log(`[client] turnStart: ${msg.playerId}`)
   })
 
   net.on('error', (msg) => {

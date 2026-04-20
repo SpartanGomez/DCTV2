@@ -13,6 +13,7 @@ import {
 } from '../shared/constants.js'
 import {
   type ClassId,
+  type GameAction,
   type MatchId,
   type MatchState,
   type PerkId,
@@ -33,16 +34,19 @@ export interface CreateMatchInput {
   playerB: PlayerId
   classA?: ClassId
   classB?: ClassId
-  /** Who acts first. Defaults to playerA; M2 will supply the coin flip. */
+  /** Forces a coin-flip outcome. If omitted, `rng` picks. */
   firstTurn?: 'A' | 'B'
   /** Injectable clock for deterministic tests. */
   now?: () => number
+  /** Injectable RNG for deterministic tests. Defaults to Math.random. */
+  rng?: () => number
 }
 
 export function createMatch(input: CreateMatchInput): MatchState {
   const classA: ClassId = input.classA ?? 'knight'
   const classB: ClassId = input.classB ?? 'knight'
-  const firstTurn = input.firstTurn ?? 'A'
+  const rng = input.rng ?? Math.random
+  const firstTurn = input.firstTurn ?? (rng() < 0.5 ? 'A' : 'B')
   const now = (input.now ?? Date.now)()
 
   const tiles: TerrainTile[][] = []
@@ -105,5 +109,54 @@ export function createMatch(input: CreateMatchInput): MatchState {
     maxEnergy,
     perks,
     phase: 'active',
+  }
+}
+
+/**
+ * Apply a validated `move` action. Returns the next `MatchState`. The caller
+ * is responsible for running `validateMove` first and only calling this with
+ * a legal action — passing invalid input here is a programmer error.
+ */
+export function applyMove(
+  state: MatchState,
+  action: Extract<GameAction, { kind: 'move' }>,
+  cost: number,
+): MatchState {
+  const destination = action.path[action.path.length - 1]
+  if (!destination) return state
+  const units = state.units.map((u) =>
+    u.id === action.unitId ? { ...u, pos: destination } : u,
+  )
+  const actingUnit = state.units.find((u) => u.id === action.unitId)
+  if (!actingUnit) return state
+  const actorId = actingUnit.ownerId
+  const remaining = (state.energy[actorId] ?? 0) - cost
+  const energy: Record<PlayerId, number> = { ...state.energy, [actorId]: remaining }
+  return { ...state, units, energy }
+}
+
+export interface EndTurnResult {
+  state: MatchState
+  nextPlayer: PlayerId
+}
+
+/**
+ * Apply a validated `endTurn`: hand the turn to the other player and refresh
+ * their energy. Turn timer resets from the injected clock.
+ */
+export function applyEndTurn(state: MatchState, now: number): EndTurnResult {
+  const players = Array.from(new Set(state.units.map((u) => u.ownerId)))
+  const next = players.find((p) => p !== state.currentTurn) ?? state.currentTurn
+  const refreshed = state.maxEnergy[next] ?? BASE_ENERGY_PER_TURN
+  const energy: Record<PlayerId, number> = { ...state.energy, [next]: refreshed }
+  return {
+    state: {
+      ...state,
+      currentTurn: next,
+      turnNumber: state.turnNumber + 1,
+      turnEndsAt: now + TURN_TIMER_MS,
+      energy,
+    },
+    nextPlayer: next,
   }
 }
