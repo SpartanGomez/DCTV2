@@ -25,6 +25,7 @@ declare global {
       move: (x: number, y: number) => void
       endTurn: () => void
       defend: () => void
+      scout: (x: number, y: number) => void
       attackNearest: () => void
       ability: (index: 0 | 1 | 2, target?: { x: number; y: number }) => void
     }
@@ -145,6 +146,14 @@ async function main(): Promise<void> {
     net.send({ type: 'action', action: { kind: 'defend', unitId: unit.id } })
   }
 
+  const sendScout = (center: Position): void => {
+    if (!activeScene) return
+    const unit = activeScene.getOwnUnit()
+    if (!unit) return
+    if (activeScene.currentState.currentTurn !== myPlayerId) return
+    net.send({ type: 'action', action: { kind: 'scout', unitId: unit.id, center } })
+  }
+
   const sendAbility = (index: 0 | 1 | 2, target?: Position): void => {
     if (!activeScene) return
     const unit = activeScene.getOwnUnit()
@@ -180,10 +189,26 @@ async function main(): Promise<void> {
     })
   }
 
+  // Press S then click a tile to scout that 3×3 area.
+  let scoutArmed = false
   window.addEventListener('keydown', (ev) => {
     if (ev.key === 'e' || ev.key === 'E') sendEndTurn()
     if (ev.key === 'd' || ev.key === 'D') sendDefend()
+    if (ev.key === 's' || ev.key === 'S') {
+      scoutArmed = true
+      console.log('[client] scout armed — click a tile to reveal')
+    }
+    if (ev.key === 'Escape') scoutArmed = false
   })
+  const wrappedSendMove = sendMove
+  const scoutingAwareTileClick = (pos: Position): void => {
+    if (scoutArmed) {
+      scoutArmed = false
+      sendScout(pos)
+      return
+    }
+    wrappedSendMove(pos)
+  }
 
   if (import.meta.env.DEV) {
     // Test-only hook. Bypasses client-side UX guards so smoke tests can
@@ -211,6 +236,14 @@ async function main(): Promise<void> {
         if (!unit) return
         net.send({ type: 'action', action: { kind: 'defend', unitId: unit.id } })
       },
+      scout: (x, y) => {
+        const unit = activeScene?.getOwnUnit()
+        if (!unit) return
+        net.send({
+          type: 'action',
+          action: { kind: 'scout', unitId: unit.id, center: { x, y } },
+        })
+      },
       attackNearest: sendAttackNearest,
       ability: (index, target) => {
         sendAbility(index, target)
@@ -226,7 +259,7 @@ async function main(): Promise<void> {
       `[client] matchStart: match=${msg.match.matchId} units=${String(msg.match.units.length)} youAre=${msg.youAre} class=${myClassFromState} currentTurn=${msg.match.currentTurn}`,
     )
     hideBoot()
-    activeScene = new MatchScene(msg.match, msg.youAre, { onTileClick: sendMove })
+    activeScene = new MatchScene(msg.match, msg.youAre, { onTileClick: scoutingAwareTileClick })
     scenes.show(activeScene)
   })
 

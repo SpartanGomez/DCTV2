@@ -116,6 +116,19 @@ export function validateEndTurn(
   return { ok: true, cost: 0 }
 }
 
+export function validateScout(
+  state: MatchState,
+  actorId: PlayerId,
+  action: Extract<GameAction, { kind: 'scout' }>,
+): ValidationResult {
+  const pre = actorPreflight(state, actorId)
+  if (pre) return { ok: false, code: pre }
+  const remaining = state.energy[actorId] ?? 0
+  if (remaining < 1) return { ok: false, code: 'insufficient_energy' }
+  if (!isInBounds(action.center)) return { ok: false, code: 'invalid_path' }
+  return { ok: true, cost: 1 }
+}
+
 export function validateAttack(
   state: MatchState,
   actorId: PlayerId,

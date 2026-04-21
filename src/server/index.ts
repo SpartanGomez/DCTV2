@@ -18,8 +18,20 @@ import {
   type ServerErrorCode,
   type ServerMessage,
 } from '../shared/types.js'
-import { applyAttack, applyEndTurn, applyMove, createMatch, resolveMatchEnd } from './GameEngine.js'
-import { validateAttack, validateEndTurn, validateMove } from './validators.js'
+import {
+  applyAttack,
+  applyEndTurn,
+  applyMove,
+  applyScout,
+  createMatch,
+  resolveMatchEnd,
+} from './GameEngine.js'
+import {
+  validateAttack,
+  validateEndTurn,
+  validateMove,
+  validateScout,
+} from './validators.js'
 import {
   applyAbility,
   applyDefend,
@@ -27,6 +39,7 @@ import {
   validateAbility,
   validateDefend,
 } from './abilities.js'
+import { filterForPlayer } from './Fog.js'
 import type { ClassId } from '../shared/types.js'
 
 const PORT = Number(process.env.PORT ?? 8080)
@@ -68,6 +81,26 @@ function broadcast(match: ActiveMatch, message: ServerMessage): void {
   for (const socket of match.sockets.values()) send(socket, message)
 }
 
+/**
+ * Broadcast a fog-filtered `stateUpdate` (or `matchStart`) — each socket
+ * gets the per-player view. SPEC §11 makes this non-optional.
+ */
+function broadcastFogFiltered(
+  match: ActiveMatch,
+  kind: 'stateUpdate' | 'matchStart',
+  extra?: { youAre?: PlayerId },
+): void {
+  for (const [pid, socket] of match.sockets) {
+    const view = filterForPlayer(match.state, pid)
+    if (kind === 'matchStart' && extra?.youAre !== undefined) {
+      // Per-player matchStart — youAre is always the recipient.
+      send(socket, { type: 'matchStart', match: view, youAre: pid })
+    } else {
+      send(socket, { type: 'stateUpdate', match: view })
+    }
+  }
+}
+
 function isClientMessage(v: unknown): v is ClientMessage {
   if (typeof v !== 'object' || v === null) return false
   if (!('type' in v)) return false
@@ -107,7 +140,7 @@ function scheduleTurnTimer(match: ActiveMatch): void {
     if (match.state.phase !== 'active') return
     const result = applyEndTurn(match.state, Date.now(), TURN_TIMER)
     match.state = result.state
-    broadcast(match, { type: 'stateUpdate', match: match.state })
+    broadcastFogFiltered(match, 'stateUpdate')
     broadcast(match, {
       type: 'turnStart',
       playerId: result.nextPlayer,
@@ -141,8 +174,7 @@ function pairIfReady(): void {
     matches.set(mid, match)
     playerToMatch.set(a.id, mid)
     playerToMatch.set(b.id, mid)
-    send(a.socket, { type: 'matchStart', match: state, youAre: a.id })
-    send(b.socket, { type: 'matchStart', match: state, youAre: b.id })
+    broadcastFogFiltered(match, 'matchStart', { youAre: a.id })
     console.log(
       `[server] match ${mid} started: ${a.id} (${String(a.classId)}) vs ${b.id} (${String(b.classId)}), first turn ${state.currentTurn}`,
     )
@@ -209,7 +241,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
             ...(end.winner ? { winner: end.winner } : {}),
           }
           match.state = finalState
-          broadcast(match, { type: 'stateUpdate', match: finalState })
+          broadcastFogFiltered(match, 'stateUpdate')
           if (end.winner) {
             broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
             console.log(`[server] match ${match.id} over: winner=${end.winner} (hex trap)`)
@@ -217,7 +249,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
           return
         }
       }
-      broadcast(match, { type: 'stateUpdate', match: match.state })
+      broadcastFogFiltered(match, 'stateUpdate')
       return
     }
     case 'defend': {
@@ -229,7 +261,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       const res = applyDefend(match.state, action, result.cost)
       match.state = res.state
       sendActionResult(socket, true, eventId)
-      broadcast(match, { type: 'stateUpdate', match: match.state })
+      broadcastFogFiltered(match, 'stateUpdate')
       return
     }
     case 'ability': {
@@ -251,7 +283,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
             ...(end.winner ? { winner: end.winner } : {}),
           }
           match.state = finalState
-          broadcast(match, { type: 'stateUpdate', match: finalState })
+          broadcastFogFiltered(match, 'stateUpdate')
           if (end.winner) {
             broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
             console.log(`[server] match ${match.id} over: winner=${end.winner} (ability)`)
@@ -259,7 +291,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
           return
         }
       }
-      broadcast(match, { type: 'stateUpdate', match: match.state })
+      broadcastFogFiltered(match, 'stateUpdate')
       return
     }
     case 'attack': {
@@ -282,7 +314,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
             ...(end.winner ? { winner: end.winner } : {}),
           }
           match.state = finalState
-          broadcast(match, { type: 'stateUpdate', match: finalState })
+          broadcastFogFiltered(match, 'stateUpdate')
           if (end.winner) {
             broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
             console.log(
@@ -294,7 +326,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
           return
         }
       }
-      broadcast(match, { type: 'stateUpdate', match: match.state })
+      broadcastFogFiltered(match, 'stateUpdate')
       return
     }
     case 'endTurn': {
@@ -306,7 +338,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       const next = applyEndTurn(match.state, Date.now(), TURN_TIMER)
       match.state = next.state
       sendActionResult(socket, true, eventId)
-      broadcast(match, { type: 'stateUpdate', match: match.state })
+      broadcastFogFiltered(match, 'stateUpdate')
       if (next.ended) {
         clearTurnTimer(match)
         if (next.ended.winner) {
@@ -325,7 +357,17 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       scheduleTurnTimer(match)
       return
     }
-    case 'scout':
+    case 'scout': {
+      const result = validateScout(match.state, pid, action)
+      if (!result.ok) {
+        sendActionResult(socket, false, eventId, result.code)
+        return
+      }
+      match.state = applyScout(match.state, action, result.cost)
+      sendActionResult(socket, true, eventId)
+      broadcastFogFiltered(match, 'stateUpdate')
+      return
+    }
     case 'usePickup':
     case 'kneel':
       sendActionResult(socket, false, eventId, 'bad_message')

@@ -4,12 +4,16 @@
 
 import { Container, Graphics, Text } from 'pixi.js'
 import { GRID_HEIGHT, GRID_WIDTH, TILE_HEIGHT, TILE_WIDTH } from '../../shared/constants.js'
-import type { ClassId, MatchState, PlayerId, Position, Unit } from '../../shared/types.js'
+import { computeVisibleTiles, positionKey } from '../../shared/grid.js'
+import type { ClassId, MatchState, PlayerId, Position, Unit, UnitId } from '../../shared/types.js'
 import type { Renderer } from '../Renderer.js'
 import type { Scene } from '../SceneManager.js'
 
 const TILE_FILL_A = 0x3a3a48
 const TILE_FILL_B = 0x4a4a58
+const TILE_FOG_OVERLAY = 0x000000
+const TILE_FOG_ALPHA = 0.55
+const TILE_SCOUT_TINT = 0x6633aa
 const TILE_STROKE = 0x1a1a20
 const TILE_HOVER = 0xbba040
 const UNIT_STROKE_OWN = 0xbba040
@@ -57,7 +61,9 @@ export interface MatchSceneHandlers {
 export class MatchScene implements Scene {
   readonly root: Container = new Container()
   private readonly tilesLayer = new Container()
+  private readonly fogLayer = new Container()
   private readonly unitsLayer = new Container()
+  private readonly ghostsLayer = new Container()
   private readonly hudLayer = new Container()
   private readonly tileAt: Graphics[] = []
   private state: MatchState
@@ -66,18 +72,28 @@ export class MatchScene implements Scene {
   private hudText: Text | null = null
   private tickFn: (() => void) | null = null
   private boundRenderer: Renderer | null = null
+  /** Last-known enemy positions for ghost marker rendering (SPEC §11). */
+  private readonly ghosts = new Map<UnitId, { pos: Position; classId: ClassId; ownerId: PlayerId }>()
 
   constructor(state: MatchState, youAre: PlayerId, handlers: MatchSceneHandlers) {
     this.state = state
     this.youAre = youAre
     this.handlers = handlers
-    this.root.addChild(this.tilesLayer, this.unitsLayer, this.hudLayer)
+    this.root.addChild(
+      this.tilesLayer,
+      this.ghostsLayer,
+      this.fogLayer,
+      this.unitsLayer,
+      this.hudLayer,
+    )
+    this.observeEnemies(state)
   }
 
   mount(renderer: Renderer): void {
     this.centerStage(renderer.width, renderer.height)
     this.drawGrid()
     this.drawUnits()
+    this.drawFogAndGhosts()
     this.drawHud(renderer)
     this.tickFn = () => {
       this.refreshHud()
@@ -87,11 +103,13 @@ export class MatchScene implements Scene {
   }
 
   update(state: MatchState): void {
+    this.observeEnemies(state)
     this.state = state
-    for (const child of this.unitsLayer.removeChildren()) {
-      child.destroy()
-    }
+    for (const child of this.unitsLayer.removeChildren()) child.destroy()
+    for (const child of this.fogLayer.removeChildren()) child.destroy()
+    for (const child of this.ghostsLayer.removeChildren()) child.destroy()
     this.drawUnits()
+    this.drawFogAndGhosts()
     this.refreshHud()
   }
 
@@ -158,6 +176,90 @@ export class MatchScene implements Scene {
   private drawUnits(): void {
     for (const u of this.state.units) {
       this.drawUnit(u)
+    }
+  }
+
+  /**
+   * Track which enemies are currently visible. When an enemy we've seen
+   * before drops out of the visible units list, we persist their last
+   * position as a ghost marker. When they reappear anywhere, clear the
+   * old ghost (a new one may get written next tick).
+   */
+  private observeEnemies(state: MatchState): void {
+    const visibleEnemyIds = new Set<UnitId>()
+    for (const u of state.units) {
+      if (u.ownerId === this.youAre) continue
+      visibleEnemyIds.add(u.id)
+      // Seen right now — update our memory and clear any stale ghost.
+      this.ghosts.set(u.id, { pos: u.pos, classId: u.classId, ownerId: u.ownerId })
+    }
+    // Anyone in the previous ghost set who ISN'T in current visible list
+    // stays as a ghost (we just don't update their pos). Nothing to do here —
+    // ghosts map is only pruned when we see the enemy again at a new tile,
+    // at which point set above overwrites.
+    // If `visibleEnemyIds` currently has an enemy, its ghost record tracks
+    // the live position; rendering skips ghost when an enemy is visible.
+    for (const id of visibleEnemyIds) {
+      // Keep a sentinel so renderer knows this one is live — store with current pos.
+      const entry = this.ghosts.get(id)
+      if (entry) this.ghosts.set(id, entry)
+    }
+  }
+
+  private drawFogAndGhosts(): void {
+    const visible = computeVisibleTiles(this.state, this.youAre)
+    const visibleEnemyIds = new Set<UnitId>()
+    for (const u of this.state.units) {
+      if (u.ownerId !== this.youAre) visibleEnemyIds.add(u.id)
+    }
+    const scoutedKeys = new Set<string>()
+    for (const r of this.state.scoutReveals) {
+      for (const t of r.tiles) scoutedKeys.add(positionKey(t))
+    }
+
+    const halfW = TILE_WIDTH / 2
+    const halfH = TILE_HEIGHT / 2
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const key = positionKey({ x, y })
+        const { sx, sy } = gridToScreen({ x, y })
+        if (!visible.has(key)) {
+          const g = new Graphics()
+          g.poly([sx, sy - halfH, sx + halfW, sy, sx, sy + halfH, sx - halfW, sy])
+          g.fill({ color: TILE_FOG_OVERLAY, alpha: TILE_FOG_ALPHA })
+          this.fogLayer.addChild(g)
+        } else if (scoutedKeys.has(key)) {
+          const g = new Graphics()
+          g.poly([sx, sy - halfH, sx + halfW, sy, sx, sy + halfH, sx - halfW, sy])
+          g.fill({ color: TILE_SCOUT_TINT, alpha: 0.22 })
+          this.fogLayer.addChild(g)
+        }
+      }
+    }
+
+    // Ghost markers for enemies we've seen before but can't see right now.
+    for (const [id, entry] of this.ghosts) {
+      if (visibleEnemyIds.has(id)) continue
+      const { sx, sy } = gridToScreen(entry.pos)
+      const body = new Graphics()
+      body.circle(sx, sy - 8, 12)
+      body.fill({ color: colorForClass(entry.classId), alpha: 0.35 })
+      body.stroke({ color: UNIT_STROKE_FOE, width: 2, alpha: 0.5 })
+      this.ghostsLayer.addChild(body)
+      const label = new Text({
+        text: classLetter(entry.classId),
+        style: {
+          fontFamily: 'monospace',
+          fontSize: 14,
+          fill: LABEL_FILL,
+          fontWeight: 'bold',
+        },
+      })
+      label.alpha = 0.35
+      label.anchor.set(0.5)
+      label.x = sx
+      label.y = sy - 8
+      this.ghostsLayer.addChild(label)
     }
   }
 
