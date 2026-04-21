@@ -27,6 +27,8 @@ import {
   type MatchId,
   type MatchState,
   type PerkId,
+  type Pickup,
+  type PickupKind,
   type PlayerId,
   type Position,
   type Status,
@@ -57,6 +59,8 @@ export interface CreateMatchInput {
    * in production.
    */
   turnTimerMs?: number
+  /** Override the default pickup layout — tests use this. */
+  pickups?: Pickup[]
 }
 
 export function createMatch(input: CreateMatchInput): MatchState {
@@ -117,7 +121,7 @@ export function createMatch(input: CreateMatchInput): MatchState {
     arena: 'pit',
     grid: { width: GRID_WIDTH, height: GRID_HEIGHT, tiles },
     units: [unitA, unitB],
-    pickups: [],
+    pickups: input.pickups ?? defaultPickups(input.matchId),
     traps: [],
     ashClouds: [],
     scoutReveals: [],
@@ -129,6 +133,29 @@ export function createMatch(input: CreateMatchInput): MatchState {
     perks,
     phase: 'active',
   }
+}
+
+/**
+ * Default pickup layout for the M7 placeholder arena: one of each pickup
+ * kind placed in the center strip. M11 replaces this with real arena
+ * `pickupSlots` + a random-kind roller.
+ */
+function defaultPickups(mid: MatchId): Pickup[] {
+  const kinds: PickupKind[] = ['health_flask', 'energy_crystal', 'scroll_of_sight', 'chest']
+  const slots: Position[] = [
+    { x: 3, y: 3 },
+    { x: 4, y: 3 },
+    { x: 3, y: 4 },
+    { x: 4, y: 4 },
+  ]
+  return kinds.map((kind, i) => {
+    const pos = slots[i] ?? { x: 3, y: 3 }
+    return {
+      id: `pk_${mid}_${String(i)}`,
+      pos,
+      kind,
+    }
+  })
 }
 
 /**
@@ -195,12 +222,21 @@ export function applyAttack(
     damage *= 1 + HIGH_GROUND_DAMAGE_BONUS
   }
 
-  const finalDamage = Math.max(MIN_DIRECT_DAMAGE, Math.round(damage))
+  // Whetstone (chest sub-item): one-shot +2 damage on the attacker's next attack.
+  const whetstone = attacker.statuses.some((s) => s.kind === 'whetstone')
+  let finalDamage = Math.max(MIN_DIRECT_DAMAGE, Math.round(damage))
+  if (whetstone) finalDamage += 2
   const nextHp = Math.max(0, target.hp - finalDamage)
   const killed = nextHp <= 0
 
   const units = state.units
-    .map((u) => (u.id === target.id ? { ...u, hp: nextHp } : u))
+    .map((u) => {
+      if (u.id === target.id) return { ...u, hp: nextHp }
+      if (whetstone && u.id === attacker.id) {
+        return { ...u, statuses: u.statuses.filter((s) => s.kind !== 'whetstone') }
+      }
+      return u
+    })
     .filter((u) => u.hp > 0)
 
   const actorEnergy = (state.energy[attacker.ownerId] ?? 0) - cost

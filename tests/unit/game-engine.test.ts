@@ -131,12 +131,19 @@ describe('createMatch', () => {
     expect(m.turnEndsAt).toBe(500 + 2_000)
   })
 
-  it('starts with empty pickup/trap/ashCloud arrays', () => {
+  it('starts with default pickups, empty traps + ashClouds', () => {
     const m = createMatch({ matchId: MID, playerA: PA, playerB: PB, now: () => 0 })
-    expect(m.pickups).toEqual([])
+    expect(m.pickups).toHaveLength(4)
+    const kinds = m.pickups.map((p) => p.kind).sort()
+    expect(kinds).toEqual(['chest', 'energy_crystal', 'health_flask', 'scroll_of_sight'])
     expect(m.traps).toEqual([])
     expect(m.ashClouds).toEqual([])
     expect(m.perks[PA]).toEqual([])
     expect(m.perks[PB]).toEqual([])
+  })
+
+  it('honors an explicit empty pickups override', () => {
+    const m = createMatch({ matchId: MID, playerA: PA, playerB: PB, now: () => 0, pickups: [] })
+    expect(m.pickups).toEqual([])
   })
 })

@@ -26,6 +26,7 @@ declare global {
       endTurn: () => void
       defend: () => void
       scout: (x: number, y: number) => void
+      usePickup: () => void
       attackNearest: () => void
       ability: (index: 0 | 1 | 2, target?: { x: number; y: number }) => void
     }
@@ -191,9 +192,17 @@ async function main(): Promise<void> {
 
   // Press S then click a tile to scout that 3×3 area.
   let scoutArmed = false
+  const sendUsePickup = (): void => {
+    if (!activeScene) return
+    const unit = activeScene.getOwnUnit()
+    if (!unit) return
+    if (activeScene.currentState.currentTurn !== myPlayerId) return
+    net.send({ type: 'action', action: { kind: 'usePickup', unitId: unit.id } })
+  }
   window.addEventListener('keydown', (ev) => {
     if (ev.key === 'e' || ev.key === 'E') sendEndTurn()
     if (ev.key === 'd' || ev.key === 'D') sendDefend()
+    if (ev.key === 'u' || ev.key === 'U') sendUsePickup()
     if (ev.key === 's' || ev.key === 'S') {
       scoutArmed = true
       console.log('[client] scout armed — click a tile to reveal')
@@ -243,6 +252,11 @@ async function main(): Promise<void> {
           type: 'action',
           action: { kind: 'scout', unitId: unit.id, center: { x, y } },
         })
+      },
+      usePickup: () => {
+        const unit = activeScene?.getOwnUnit()
+        if (!unit) return
+        net.send({ type: 'action', action: { kind: 'usePickup', unitId: unit.id } })
       },
       attackNearest: sendAttackNearest,
       ability: (index, target) => {

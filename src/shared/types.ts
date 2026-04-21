@@ -76,6 +76,7 @@ export type StatusKind =
   | 'revealed'
   | 'stunned'
   | 'blood_tithe_used'
+  | 'whetstone'
 
 export interface Status {
   kind: StatusKind
@@ -98,6 +99,9 @@ export interface Unit {
 }
 
 export type PickupKind = 'health_flask' | 'energy_crystal' | 'scroll_of_sight' | 'chest'
+
+/** Sub-items the `chest` pickup can roll on open (SPEC §16). */
+export type ChestItem = 'smoke_bomb' | 'flash' | 'whetstone'
 
 export interface Pickup {
   id: string

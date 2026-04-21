@@ -111,3 +111,14 @@ export const DESECRATE_TTL = 3 as const
 
 // --- Scout / Fog of war (SPEC §11) ---
 export const SCOUT_RADIUS = 1 as const // 3×3 footprint = center + 1 in each dimension
+
+// --- Pickups (SPEC §16) ---
+export const HEALTH_FLASK_HEAL = 5 as const
+export const ENERGY_CRYSTAL_GAIN = 2 as const
+/** Chest sub-item: Smoke Bomb — place a 1-tile fog on any tile in range 2, 2 turns. */
+export const SMOKE_BOMB_RANGE = 2 as const
+export const SMOKE_BOMB_TTL = 2 as const
+/** Chest sub-item: Flash — stun adjacent enemy 1 turn. */
+export const FLASH_STUN_TTL = 1 as const
+/** Chest sub-item: Whetstone — +2 damage on the holder's next attack only. */
+export const WHETSTONE_DAMAGE_BONUS = 2 as const
