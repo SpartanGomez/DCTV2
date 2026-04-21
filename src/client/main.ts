@@ -8,9 +8,11 @@ import { SceneManager } from './SceneManager.js'
 import { LobbyScene } from './scenes/LobbyScene.js'
 import { MatchScene } from './scenes/MatchScene.js'
 import { ResultsScene } from './scenes/ResultsScene.js'
+import { PerkDraftScene } from './scenes/PerkDraftScene.js'
+import { BracketScene } from './scenes/BracketScene.js'
 import { manhattanDistance, orthogonalPath } from '../shared/grid.js'
 import { CLASS_ABILITIES, CLASS_STATS } from '../shared/constants.js'
-import type { AbilityId, ClassId, PlayerId, Position, UnitId } from '../shared/types.js'
+import type { AbilityId, BracketState, ClassId, MatchId, PlayerId, Position, UnitId } from '../shared/types.js'
 
 declare global {
   interface Window {
@@ -320,8 +322,57 @@ async function main(): Promise<void> {
     console.log(
       `[client] matchOver: winner=${msg.winner} outcome=${outcome} surrender=${String(surrender)}`,
     )
+    // Show ResultsScene briefly; BracketScene follows once tournamentUpdate arrives.
     scenes.show(new ResultsScene(msg.winner, my, surrender))
     activeScene = null
+  })
+
+  let latestBracket: BracketState | null = null
+  let bracketScene: BracketScene | null = null
+
+  net.on('tournamentUpdate', (msg) => {
+    latestBracket = msg.bracket
+    console.log(`[client] tournamentUpdate: round=${String(msg.bracket.currentRound)}`)
+    // If we're showing BracketScene, update it live.
+    if (bracketScene && scenes.active === bracketScene) {
+      bracketScene.update(msg.bracket)
+    }
+    // After a matchOver, switch to bracket view.
+    if (!activeScene && myPlayerId && !(scenes.active instanceof MatchScene)) {
+      const my = myPlayerId
+      bracketScene = new BracketScene(msg.bracket, my, {
+        onSpectate: (mid) => net.send({ type: 'spectate', matchId: mid as MatchId }),
+      })
+      scenes.show(bracketScene)
+    }
+  })
+
+  net.on('perkOptions', (msg) => {
+    const my = myPlayerId
+    if (!my) return
+    console.log(`[client] perkOptions: ${msg.perks.join(', ')}`)
+    scenes.show(new PerkDraftScene(msg.perks, {
+      onSelect: (perkId) => {
+        net.send({ type: 'selectPerk', perkId })
+        // Show bracket while waiting for next round.
+        if (latestBracket) {
+          bracketScene = new BracketScene(latestBracket, my, {
+            onSpectate: (mid) => net.send({ type: 'spectate', matchId: mid as MatchId }),
+          })
+          scenes.show(bracketScene)
+        }
+      },
+    }))
+  })
+
+  net.on('spectatorState', (msg) => {
+    // Spectators see the raw unfiltered match state.
+    if (activeScene instanceof MatchScene) {
+      activeScene.update(msg.match)
+    } else if (myPlayerId) {
+      activeScene = new MatchScene(msg.match, myPlayerId, { onTileClick: () => void 0 })
+      scenes.show(activeScene)
+    }
   })
 }
 

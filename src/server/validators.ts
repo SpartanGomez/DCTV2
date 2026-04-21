@@ -159,7 +159,10 @@ export function validateAttack(
   if (ATTACK_COST > remaining) return { ok: false, code: 'insufficient_energy' }
 
   const dist = manhattanDistance(attacker.pos, target.pos)
-  const range = CLASS_STATS[attacker.classId].attackRange
+  const baseRange = CLASS_STATS[attacker.classId].attackRange
+  // Perk: long_reach adds +1 to attack range.
+  const attackerPerks = state.perks[actorId] ?? []
+  const range = attackerPerks.includes('long_reach') ? baseRange + 1 : baseRange
   if (dist > range) return { ok: false, code: 'out_of_range' }
 
   // Shadow tile conceals the occupant from direct single-target attacks

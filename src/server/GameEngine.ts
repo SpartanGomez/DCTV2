@@ -12,6 +12,7 @@ import {
   CORRUPTED_HERETIC_HEAL,
   COVER_RUBBLE_REDUCTION,
   DEFEND_REDUCTION,
+  ENERGY_SURGE_PER_TURN,
   FORTIFY_REDUCTION,
   GRID_HEIGHT,
   GRID_WIDTH,
@@ -22,6 +23,7 @@ import {
 } from '../shared/constants.js'
 import { positionKey } from '../shared/grid.js'
 import {
+  type ArenaDef,
   type ClassId,
   type GameAction,
   type MatchId,
@@ -37,7 +39,7 @@ import {
   unitId,
 } from '../shared/types.js'
 
-/** Mirrored spawns per SPEC §7 M1. Fixed for the M1 placeholder arena. */
+/** Fallback spawns for the placeholder arena (no ArenaDef provided). */
 export const SPAWN_A: Position = { x: 1, y: 4 }
 export const SPAWN_B: Position = { x: 6, y: 3 }
 
@@ -61,6 +63,11 @@ export interface CreateMatchInput {
   turnTimerMs?: number
   /** Override the default pickup layout — tests use this. */
   pickups?: Pickup[]
+  /** Arena definition (M11). Falls back to the M7 stone-grid placeholder. */
+  arena?: ArenaDef
+  /** Perks carried into this match from the previous round's draft. */
+  perksA?: PerkId[]
+  perksB?: PerkId[]
 }
 
 export function createMatch(input: CreateMatchInput): MatchState {
@@ -70,58 +77,63 @@ export function createMatch(input: CreateMatchInput): MatchState {
   const firstTurn = input.firstTurn ?? (rng() < 0.5 ? 'A' : 'B')
   const now = (input.now ?? Date.now)()
   const turnTimerMs = input.turnTimerMs ?? TURN_TIMER_MS
+  const arenaSlug = input.arena?.slug ?? 'pit'
 
+  // Build grid tiles from arena or fallback to all-stone.
   const tiles: TerrainTile[][] = []
   for (let y = 0; y < GRID_HEIGHT; y++) {
     const row: TerrainTile[] = []
     for (let x = 0; x < GRID_WIDTH; x++) {
-      row.push({ type: 'stone' })
+      const terrainType = input.arena?.tiles[y]?.[x] ?? 'stone'
+      row.push({ type: terrainType })
     }
     tiles.push(row)
   }
 
-  const unitA: Unit = {
-    id: unitId(`u_${input.matchId}_a`),
-    ownerId: input.playerA,
-    classId: classA,
-    pos: SPAWN_A,
-    hp: CLASS_STATS[classA].hp,
-    maxHp: CLASS_STATS[classA].hp,
-    statuses: [],
-  }
-  const unitB: Unit = {
-    id: unitId(`u_${input.matchId}_b`),
-    ownerId: input.playerB,
-    classId: classB,
-    pos: SPAWN_B,
-    hp: CLASS_STATS[classB].hp,
-    maxHp: CLASS_STATS[classB].hp,
-    statuses: [],
-  }
+  const spawnA = input.arena?.spawns[0] ?? SPAWN_A
+  const spawnB = input.arena?.spawns[1] ?? SPAWN_B
 
-  const currentTurn = firstTurn === 'A' ? input.playerA : input.playerB
-
-  const energy: Record<PlayerId, number> = {
-    [input.playerA]: BASE_ENERGY_PER_TURN,
-    [input.playerB]: BASE_ENERGY_PER_TURN,
-  }
-
-  const maxEnergy: Record<PlayerId, number> = {
-    [input.playerA]: BASE_ENERGY_PER_TURN,
-    [input.playerB]: BASE_ENERGY_PER_TURN,
-  }
+  const perksA: PerkId[] = input.perksA ?? []
+  const perksB: PerkId[] = input.perksB ?? []
 
   const perks: Record<PlayerId, PerkId[]> = {
-    [input.playerA]: [],
-    [input.playerB]: [],
+    [input.playerA]: perksA,
+    [input.playerB]: perksB,
   }
+
+  // energy_surge: +1 max energy per turn.
+  const maxEnergyA = perksA.includes('energy_surge') ? ENERGY_SURGE_PER_TURN : BASE_ENERGY_PER_TURN
+  const maxEnergyB = perksB.includes('energy_surge') ? ENERGY_SURGE_PER_TURN : BASE_ENERGY_PER_TURN
+
+  const maxEnergy: Record<PlayerId, number> = {
+    [input.playerA]: maxEnergyA,
+    [input.playerB]: maxEnergyB,
+  }
+  const energy: Record<PlayerId, number> = {
+    [input.playerA]: maxEnergyA,
+    [input.playerB]: maxEnergyB,
+  }
+
+  // Apply second_wind (+4 HP) and mist_cloak (spawn on shadow) and
+  // counterspell/first_strike/ghost_step initial statuses.
+  const unitA = buildUnit(input.matchId, 'a', input.playerA, classA, spawnA, perksA, tiles)
+  const unitB = buildUnit(input.matchId, 'b', input.playerB, classB, spawnB, perksB, tiles)
+
+  const currentTurn = firstTurn === 'A' ? input.playerA : input.playerB
+  const firstPlayer = currentTurn
+  // Grant first_strike_ready and ghost_step_ready to the first player right away.
+  const units = applyTurnStartPerkStatuses([unitA, unitB], firstPlayer, perks)
+
+  const pickups = input.pickups ?? (input.arena
+    ? arenaPickups(input.matchId, input.arena, rng)
+    : defaultPickups(input.matchId))
 
   return {
     matchId: input.matchId,
-    arena: 'pit',
+    arena: arenaSlug,
     grid: { width: GRID_WIDTH, height: GRID_HEIGHT, tiles },
-    units: [unitA, unitB],
-    pickups: input.pickups ?? defaultPickups(input.matchId),
+    units,
+    pickups,
     traps: [],
     ashClouds: [],
     scoutReveals: [],
@@ -133,6 +145,112 @@ export function createMatch(input: CreateMatchInput): MatchState {
     perks,
     phase: 'active',
   }
+}
+
+function buildUnit(
+  mid: MatchId,
+  suffix: 'a' | 'b',
+  ownerId: PlayerId,
+  classId: ClassId,
+  defaultSpawn: Position,
+  perks: PerkId[],
+  tiles: TerrainTile[][],
+): Unit {
+  let hp = CLASS_STATS[classId].hp
+  // second_wind: +4 HP at round start (capped at maxHp later; here hp === maxHp).
+  if (perks.includes('second_wind')) hp = Math.min(CLASS_STATS[classId].hp, hp + 4)
+  const maxHp = CLASS_STATS[classId].hp
+
+  // mist_cloak: spawn on nearest shadow tile if available.
+  let pos = defaultSpawn
+  if (perks.includes('mist_cloak')) {
+    const shadow = findNearestShadow(tiles, defaultSpawn)
+    if (shadow) pos = shadow
+  }
+
+  const statuses: Status[] = []
+  if (perks.includes('counterspell')) {
+    statuses.push({ kind: 'counterspell_active', ttl: -1 })
+  }
+  // first_strike_ready and ghost_step_ready are added per turn-start; see applyTurnStartPerkStatuses.
+
+  return {
+    id: unitId(`u_${mid}_${suffix}`),
+    ownerId,
+    classId,
+    pos,
+    hp,
+    maxHp,
+    statuses,
+  }
+}
+
+function findNearestShadow(tiles: TerrainTile[][], from: Position): Position | null {
+  let best: Position | null = null
+  let bestDist = Infinity
+  for (let y = 0; y < tiles.length; y++) {
+    for (let x = 0; x < (tiles[y]?.length ?? 0); x++) {
+      if (tiles[y]?.[x]?.type === 'shadow') {
+        const dist = Math.abs(x - from.x) + Math.abs(y - from.y)
+        if (dist < bestDist) {
+          bestDist = dist
+          best = { x, y }
+        }
+      }
+    }
+  }
+  return best
+}
+
+/** Shuffle pickup kinds randomly across the arena's pickup slots. */
+function arenaPickups(mid: MatchId, arena: ArenaDef, rng: () => number): Pickup[] {
+  const kinds: PickupKind[] = ['health_flask', 'energy_crystal', 'scroll_of_sight', 'chest']
+  // Fisher-Yates shuffle.
+  for (let i = kinds.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    const tmp = kinds[i]
+    const src = kinds[j]
+    if (tmp !== undefined && src !== undefined) {
+      kinds[i] = src
+      kinds[j] = tmp
+    }
+  }
+  return arena.pickupSlots.slice(0, kinds.length).map((pos, i) => ({
+    id: `pk_${mid}_${String(i)}`,
+    pos,
+    kind: kinds[i] ?? 'health_flask',
+  }))
+}
+
+/**
+ * At the start of each turn, remove stale per-turn perk statuses from the
+ * outgoing player's unit and add fresh ones for the incoming player.
+ * Called from both createMatch (for the first player) and applyEndTurn.
+ */
+export function applyTurnStartPerkStatuses(
+  units: Unit[],
+  incoming: PlayerId,
+  perks: Record<PlayerId, PerkId[]>,
+): Unit[] {
+  return units.map((u) => {
+    const isPerkStatus = (kind: Status['kind']) =>
+      kind === 'first_strike_ready' || kind === 'ghost_step_ready'
+    // Strip stale per-turn perk statuses from all units first.
+    const stripped = u.statuses.filter((s) => !isPerkStatus(s.kind))
+    if (u.ownerId !== incoming) return { ...u, statuses: stripped }
+    // Re-add for the incoming player based on their perks.
+    const playerPerks = perks[incoming] ?? []
+    if (playerPerks.includes('first_strike')) {
+      stripped.push({ kind: 'first_strike_ready', ttl: -1 })
+    }
+    if (playerPerks.includes('ghost_step')) {
+      stripped.push({ kind: 'ghost_step_ready', ttl: -1 })
+    }
+    if (stripped.length === u.statuses.length && stripped.every((s, i) => s === u.statuses[i])) {
+      return u
+    }
+    return { ...u, statuses: stripped }
+  })
 }
 
 /**
@@ -170,13 +288,23 @@ export function applyMove(
 ): MatchState {
   const destination = action.path[action.path.length - 1]
   if (!destination) return state
-  const units = state.units.map((u) =>
-    u.id === action.unitId ? { ...u, pos: destination } : u,
-  )
   const actingUnit = state.units.find((u) => u.id === action.unitId)
   if (!actingUnit) return state
   const actorId = actingUnit.ownerId
-  const remaining = (state.energy[actorId] ?? 0) - cost
+
+  // Perk: ghost_step — first move each turn costs 0 energy (consume the status).
+  const hasGhostStep = actingUnit.statuses.some((s) => s.kind === 'ghost_step_ready')
+  const actualCost = hasGhostStep ? 0 : cost
+
+  const units = state.units.map((u) => {
+    if (u.id !== action.unitId) return u
+    const updated = { ...u, pos: destination }
+    if (hasGhostStep) {
+      return { ...updated, statuses: updated.statuses.filter((s) => s.kind !== 'ghost_step_ready') }
+    }
+    return updated
+  })
+  const remaining = (state.energy[actorId] ?? 0) - actualCost
   const energy: Record<PlayerId, number> = { ...state.energy, [actorId]: remaining }
   return { ...state, units, energy }
 }
@@ -207,12 +335,28 @@ export function applyAttack(
   const target = state.units.find((u) => u.id === action.targetId)
   if (!attacker || !target) return { state, damage: 0, killed: false }
 
+  const attackerPerks = state.perks[attacker.ownerId] ?? []
+  const defenderPerks = state.perks[target.ownerId] ?? []
+
   let damage = CLASS_STATS[attacker.classId].baseAttackDamage
+
+  // Perk: bloodlust (+1 base damage on all attacks).
+  if (attackerPerks.includes('bloodlust')) damage += 1
+
+  // Perk: first_strike (+3 on first attack of the round, via status).
+  const hasFirstStrike = attacker.statuses.some((s) => s.kind === 'first_strike_ready')
+  if (hasFirstStrike) damage += 3
+
+  // Perk: last_stand (+2 when attacker HP <= 4).
+  if (attackerPerks.includes('last_stand') && attacker.hp <= 4) damage += 2
 
   const shieldWall = target.statuses.some((s) => s.kind === 'shield_wall')
   const defending = target.statuses.some((s) => s.kind === 'defending')
   if (shieldWall) damage *= 1 - FORTIFY_REDUCTION
-  else if (defending) damage *= 1 - DEFEND_REDUCTION
+  else if (defending) {
+    // Perk: fortify upgrades Defend from 50% → 75% reduction.
+    damage *= defenderPerks.includes('fortify') ? 1 - FORTIFY_REDUCTION : 1 - DEFEND_REDUCTION
+  }
 
   const targetTile = state.grid.tiles[target.pos.y]?.[target.pos.x]
   if (targetTile?.type === 'rubble') damage *= 1 - COVER_RUBBLE_REDUCTION
@@ -226,14 +370,34 @@ export function applyAttack(
   const whetstone = attacker.statuses.some((s) => s.kind === 'whetstone')
   let finalDamage = Math.max(MIN_DIRECT_DAMAGE, Math.round(damage))
   if (whetstone) finalDamage += 2
+
+  // Perk: thick_skin (−1 damage taken, min 1).
+  if (defenderPerks.includes('thick_skin')) finalDamage = Math.max(1, finalDamage - 1)
+
   const nextHp = Math.max(0, target.hp - finalDamage)
   const killed = nextHp <= 0
+
+  // Perk: vampiric_touch (heal attacker 1 HP per successful hit).
+  const vampHeal = attackerPerks.includes('vampiric_touch') ? 1 : 0
 
   const units = state.units
     .map((u) => {
       if (u.id === target.id) return { ...u, hp: nextHp }
-      if (whetstone && u.id === attacker.id) {
-        return { ...u, statuses: u.statuses.filter((s) => s.kind !== 'whetstone') }
+      if (u.id === attacker.id) {
+        let updated = u
+        // Consume first_strike_ready.
+        if (hasFirstStrike) {
+          updated = { ...updated, statuses: updated.statuses.filter((s) => s.kind !== 'first_strike_ready') }
+        }
+        // Consume whetstone.
+        if (whetstone) {
+          updated = { ...updated, statuses: updated.statuses.filter((s) => s.kind !== 'whetstone') }
+        }
+        // Vampiric Touch heal.
+        if (vampHeal > 0) {
+          updated = { ...updated, hp: Math.min(updated.maxHp, updated.hp + vampHeal) }
+        }
+        return updated
       }
       return u
     })
@@ -373,9 +537,14 @@ export function applyEndTurn(
 
   const refreshed = working.maxEnergy[next] ?? BASE_ENERGY_PER_TURN
   const energy: Record<PlayerId, number> = { ...working.energy, [next]: refreshed }
+
+  // Refresh per-turn perk statuses (first_strike_ready, ghost_step_ready) for incoming player.
+  const unitsWithPerks = applyTurnStartPerkStatuses(working.units, next, working.perks)
+
   return {
     state: {
       ...working,
+      units: unitsWithPerks,
       currentTurn: next,
       turnNumber: working.turnNumber + 1,
       turnEndsAt: now + turnTimerMs,
@@ -468,8 +637,11 @@ function healUnitById(state: MatchState, unitIdArg: Unit['id'], amount: number, 
 }
 
 function applyHazardDoT(state: MatchState, owner: PlayerId): MatchState {
+  // Perk: ash_walker — immune to hazard terrain damage.
+  const ownerPerks = state.perks[owner] ?? []
+  if (ownerPerks.includes('ash_walker')) return state
+
   let working = state
-  // Snapshot ids so we don't iterate a mutating array.
   const ids = working.units
     .filter((u) => u.ownerId === owner && u.hp > 0)
     .map((u) => u.id)

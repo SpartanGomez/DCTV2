@@ -12,10 +12,12 @@ export interface Position {
 export type UnitId = string & { readonly __brand: 'UnitId' }
 export type PlayerId = string & { readonly __brand: 'PlayerId' }
 export type MatchId = string & { readonly __brand: 'MatchId' }
+export type TournamentId = string & { readonly __brand: 'TournamentId' }
 
 export const unitId = (s: string): UnitId => s as UnitId
 export const playerId = (s: string): PlayerId => s as PlayerId
 export const matchId = (s: string): MatchId => s as MatchId
+export const tournamentId = (s: string): TournamentId => s as TournamentId
 
 export type PerkId =
   | 'bloodlust'
@@ -77,6 +79,12 @@ export type StatusKind =
   | 'stunned'
   | 'blood_tithe_used'
   | 'whetstone'
+  /** Perk: first_strike — present at turn start; consumed on first attack. */
+  | 'first_strike_ready'
+  /** Perk: ghost_step — present at turn start; consumed on first move. */
+  | 'ghost_step_ready'
+  /** Perk: counterspell — present at match start; consumed on first enemy ability. */
+  | 'counterspell_active'
 
 export interface Status {
   kind: StatusKind

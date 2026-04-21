@@ -53,8 +53,11 @@ export function validateUsePickup(
   const pickup = state.pickups.find((p) => positionsEqual(p.pos, unit.pos))
   if (!pickup) return { ok: false, code: 'bad_message' }
   const remaining = state.energy[actorId] ?? 0
-  if (USE_PICKUP_COST > remaining) return { ok: false, code: 'insufficient_energy' }
-  return { ok: true, cost: USE_PICKUP_COST }
+  // Perk: pillager — pickup action costs 0 energy.
+  const actorPerks = state.perks[actorId] ?? []
+  const cost = actorPerks.includes('pillager') ? 0 : USE_PICKUP_COST
+  if (cost > remaining) return { ok: false, code: 'insufficient_energy' }
+  return { ok: true, cost }
 }
 
 const CHEST_ITEMS: readonly ChestItem[] = ['smoke_bomb', 'flash', 'whetstone']
