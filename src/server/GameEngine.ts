@@ -270,6 +270,21 @@ export function resolveMatchEnd(
 }
 
 /**
+ * Apply a validated `kneel` action (SPEC §17). Surrenderer loses
+ * regardless of HP; winner is the non-surrendering player.
+ */
+export function applyKneel(state: MatchState, surrenderer: PlayerId, now: number): MatchState {
+  const winner =
+    Array.from(new Set(state.units.map((u) => u.ownerId))).find((p) => p !== surrenderer) ?? null
+  return {
+    ...state,
+    phase: 'over',
+    ...(winner ? { winner } : {}),
+    surrender: { by: surrenderer, at: now },
+  }
+}
+
+/**
  * Apply a validated `scout` action: register a 3×3 reveal centered on the
  * target, clipped to grid bounds. TTL=2 so the reveal spans the rest of
  * the scout's turn + the opponent's turn; ticks to 0 at the scout's

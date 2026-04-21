@@ -129,6 +129,16 @@ export function validateScout(
   return { ok: true, cost: 1 }
 }
 
+/**
+ * Surrender is 0-cost and available on the actor's own turn only (SPEC §17).
+ * Per §8.7 it's a categorical loss regardless of HP.
+ */
+export function validateKneel(state: MatchState, actorId: PlayerId): ValidationResult {
+  if (state.phase !== 'active') return { ok: false, code: 'match_not_active' }
+  if (state.currentTurn !== actorId) return { ok: false, code: 'not_your_turn' }
+  return { ok: true, cost: 0 }
+}
+
 export function validateAttack(
   state: MatchState,
   actorId: PlayerId,

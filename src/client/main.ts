@@ -27,6 +27,7 @@ declare global {
       defend: () => void
       scout: (x: number, y: number) => void
       usePickup: () => void
+      kneel: () => void
       attackNearest: () => void
       ability: (index: 0 | 1 | 2, target?: { x: number; y: number }) => void
     }
@@ -207,6 +208,10 @@ async function main(): Promise<void> {
       scoutArmed = true
       console.log('[client] scout armed — click a tile to reveal')
     }
+    // Shift+K to kneel — guards against accidental fat-finger surrender.
+    if ((ev.key === 'K' || ev.key === 'k') && ev.shiftKey) {
+      net.send({ type: 'action', action: { kind: 'kneel' } })
+    }
     if (ev.key === 'Escape') scoutArmed = false
   })
   const wrappedSendMove = sendMove
@@ -258,6 +263,9 @@ async function main(): Promise<void> {
         if (!unit) return
         net.send({ type: 'action', action: { kind: 'usePickup', unitId: unit.id } })
       },
+      kneel: () => {
+        net.send({ type: 'action', action: { kind: 'kneel' } })
+      },
       attackNearest: sendAttackNearest,
       ability: (index, target) => {
         sendAbility(index, target)
@@ -308,10 +316,11 @@ async function main(): Promise<void> {
     const my = myPlayerId
     if (!my) return
     const outcome = msg.winner === my ? 'VICTORY' : 'DEFEAT'
+    const surrender = msg.surrender ?? false
     console.log(
-      `[client] matchOver: winner=${msg.winner} outcome=${outcome} surrender=${String(msg.surrender ?? false)}`,
+      `[client] matchOver: winner=${msg.winner} outcome=${outcome} surrender=${String(surrender)}`,
     )
-    scenes.show(new ResultsScene(msg.winner, my))
+    scenes.show(new ResultsScene(msg.winner, my, surrender))
     activeScene = null
   })
 }

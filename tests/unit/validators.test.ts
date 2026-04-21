@@ -2,8 +2,8 @@
 // Validator coverage per SPEC §19 error codes + §8.5 path re-validation.
 
 import { describe, expect, it } from 'vitest'
-import { applyEndTurn, applyMove, createMatch } from '../../src/server/GameEngine.js'
-import { validateEndTurn, validateMove } from '../../src/server/validators.js'
+import { applyEndTurn, applyKneel, applyMove, createMatch } from '../../src/server/GameEngine.js'
+import { validateEndTurn, validateKneel, validateMove } from '../../src/server/validators.js'
 import { BASE_ENERGY_PER_TURN } from '../../src/shared/constants.js'
 import {
   matchId,
@@ -188,5 +188,21 @@ describe('applyMove + applyEndTurn — integration', () => {
     const state = fresh()
     const result = applyEndTurn(state, 10_000, 1_500)
     expect(result.state.turnEndsAt).toBe(10_000 + 1_500)
+  })
+})
+
+describe('validateKneel + applyKneel (M12 surrender)', () => {
+  it('rejects off-turn kneel', () => {
+    const state = fresh()
+    expect(validateKneel(state, PB)).toEqual({ ok: false, code: 'not_your_turn' })
+  })
+
+  it('ends the match with the non-kneeler as winner + surrender flag', () => {
+    const state = fresh()
+    expect(validateKneel(state, PA)).toEqual({ ok: true, cost: 0 })
+    const next = applyKneel(state, PA, 123)
+    expect(next.phase).toBe('over')
+    expect(next.winner).toBe(PB)
+    expect(next.surrender).toEqual({ by: PA, at: 123 })
   })
 })

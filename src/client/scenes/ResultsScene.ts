@@ -13,6 +13,7 @@ export class ResultsScene implements Scene {
   constructor(
     private readonly winner: PlayerId | null,
     private readonly youAre: PlayerId,
+    private readonly surrender = false,
   ) {}
 
   mount(renderer: Renderer): void {
@@ -46,7 +47,11 @@ export class ResultsScene implements Scene {
     this.root.addChild(banner)
 
     const sub = new Text({
-      text: 'the arena remembers',
+      text: this.surrender
+        ? this.winner === this.youAre
+          ? 'they yielded. the arena remembers.'
+          : 'you yielded. the arena remembers.'
+        : 'the arena remembers',
       style: {
         fontFamily: 'monospace',
         fontSize: 14,
