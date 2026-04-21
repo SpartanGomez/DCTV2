@@ -40,6 +40,7 @@ import {
   validateDefend,
 } from './abilities.js'
 import { filterForPlayer } from './Fog.js'
+import { applyUsePickup, validateUsePickup } from './pickups.js'
 import type { ClassId } from '../shared/types.js'
 
 const PORT = Number(process.env.PORT ?? 8080)
@@ -368,7 +369,23 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       broadcastFogFiltered(match, 'stateUpdate')
       return
     }
-    case 'usePickup':
+    case 'usePickup': {
+      const result = validateUsePickup(match.state, pid, action)
+      if (!result.ok) {
+        sendActionResult(socket, false, eventId, result.code)
+        return
+      }
+      const res = applyUsePickup(match.state, action, result.cost)
+      match.state = res.state
+      sendActionResult(socket, true, eventId)
+      if (res.chestItem) {
+        console.log(
+          `[server] match ${match.id} chest opened by ${pid} → ${res.chestItem}`,
+        )
+      }
+      broadcastFogFiltered(match, 'stateUpdate')
+      return
+    }
     case 'kneel':
       sendActionResult(socket, false, eventId, 'bad_message')
       return

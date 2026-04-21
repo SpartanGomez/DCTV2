@@ -174,8 +174,48 @@ export class MatchScene implements Scene {
   }
 
   private drawUnits(): void {
+    this.drawPickups()
     for (const u of this.state.units) {
       this.drawUnit(u)
+    }
+  }
+
+  private drawPickups(): void {
+    for (const p of this.state.pickups) {
+      const { sx, sy } = gridToScreen(p.pos)
+      const color =
+        p.kind === 'health_flask'
+          ? 0x8b0000
+          : p.kind === 'energy_crystal'
+            ? 0x4466cc
+            : p.kind === 'scroll_of_sight'
+              ? 0xbba040
+              : 0x6a5a3a
+      const body = new Graphics()
+      body.roundRect(sx - 8, sy - 10, 16, 16, 2)
+      body.fill({ color })
+      body.stroke({ color: 0x1a1a20, width: 1 })
+      this.unitsLayer.addChild(body)
+      const label = new Text({
+        text:
+          p.kind === 'health_flask'
+            ? '+'
+            : p.kind === 'energy_crystal'
+              ? 'E'
+              : p.kind === 'scroll_of_sight'
+                ? 'S'
+                : '?',
+        style: {
+          fontFamily: 'monospace',
+          fontSize: 10,
+          fontWeight: 'bold',
+          fill: 0xccccdd,
+        },
+      })
+      label.anchor.set(0.5)
+      label.x = sx
+      label.y = sy - 2
+      this.unitsLayer.addChild(label)
     }
   }
 

@@ -33,7 +33,12 @@ import {
   VANGUARD_CHARGE_IMPACT_DAMAGE,
   VANGUARD_CHARGE_MAX_TILES,
 } from '../shared/constants.js'
-import { isInBounds, manhattanDistance, positionKey } from '../shared/grid.js'
+import {
+  isInBounds,
+  lineOfSight as losClear,
+  manhattanDistance,
+  positionKey,
+} from '../shared/grid.js'
 import {
   type AbilityId,
   type AshCloud,
@@ -409,6 +414,23 @@ function validateCinderBolt(
   if (target.ownerId === actorId) return { ok: false, code: 'bad_message' }
   if (manhattanDistance(unit.pos, target.pos) > CINDER_BOLT_RANGE) {
     return { ok: false, code: 'out_of_range' }
+  }
+  // Ranged LoS check: pillars/walls/ash-clouds block the bolt.
+  const losBlockers = new Set<string>()
+  for (let y = 0; y < state.grid.tiles.length; y++) {
+    const row = state.grid.tiles[y]
+    if (!row) continue
+    for (let x = 0; x < row.length; x++) {
+      const tile = row[x]
+      if (!tile) continue
+      if (tile.type === 'pillar' || tile.type === 'wall') {
+        losBlockers.add(positionKey({ x, y }))
+      }
+    }
+  }
+  for (const ac of state.ashClouds) for (const t of ac.tiles) losBlockers.add(positionKey(t))
+  if (!losClear(losBlockers, unit.pos, target.pos)) {
+    return { ok: false, code: 'no_line_of_sight' }
   }
   const tt = tileAt(state, target.pos)
   if (tt?.type === 'shadow') return { ok: false, code: 'target_untargetable' }
