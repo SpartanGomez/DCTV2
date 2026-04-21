@@ -21,6 +21,7 @@ import {
 import {
   applyAttack,
   applyEndTurn,
+  applyKneel,
   applyMove,
   applyScout,
   createMatch,
@@ -29,6 +30,7 @@ import {
 import {
   validateAttack,
   validateEndTurn,
+  validateKneel,
   validateMove,
   validateScout,
 } from './validators.js'
@@ -386,9 +388,27 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       broadcastFogFiltered(match, 'stateUpdate')
       return
     }
-    case 'kneel':
-      sendActionResult(socket, false, eventId, 'bad_message')
+    case 'kneel': {
+      const result = validateKneel(match.state, pid)
+      if (!result.ok) {
+        sendActionResult(socket, false, eventId, result.code)
+        return
+      }
+      clearTurnTimer(match)
+      match.state = applyKneel(match.state, pid, Date.now())
+      sendActionResult(socket, true, eventId)
+      broadcastFogFiltered(match, 'stateUpdate')
+      if (match.state.winner) {
+        broadcast(match, {
+          type: 'matchOver',
+          winner: match.state.winner,
+          final: match.state,
+          surrender: true,
+        })
+        console.log(`[server] match ${match.id} over: winner=${match.state.winner} (surrender by ${pid})`)
+      }
       return
+    }
   }
 }
 

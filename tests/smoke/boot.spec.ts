@@ -220,6 +220,43 @@ test('full kill flow: attacker walks into sight + attacks until match ends', asy
   }
 })
 
+test('surrender: active player kneels → opponent gets matchOver with surrender flag', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    const [infoA] = await Promise.all([msA, msB])
+
+    const kneeler = infoA.currentTurn === infoA.youAre ? pageA : pageB
+    const survivor = kneeler === pageA ? pageB : pageA
+
+    const kneelerMatchOver = kneeler.waitForEvent('console', {
+      predicate: (m) => m.text().includes('matchOver:') && m.text().includes('surrender=true'),
+      timeout: 10_000,
+    })
+    const survivorMatchOver = survivor.waitForEvent('console', {
+      predicate: (m) => m.text().includes('matchOver:') && m.text().includes('surrender=true'),
+      timeout: 10_000,
+    })
+    await kneeler.evaluate(() => {
+      if (window.__dct) window.__dct.kneel()
+    })
+    const [kMsg, sMsg] = await Promise.all([kneelerMatchOver, survivorMatchOver])
+    expect(kMsg.text()).toContain('outcome=DEFEAT')
+    expect(sMsg.text()).toContain('outcome=VICTORY')
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
 test('class-selection lobby: mage vs heretic pair + match starts', async ({ browser }) => {
   const ctxA = await browser.newContext()
   const ctxB = await browser.newContext()
