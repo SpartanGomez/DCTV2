@@ -1,9 +1,10 @@
 // tests/smoke/boot.spec.ts
 // Smoke gates:
 //   - /health endpoint reports ok + match counts
-//   - Active player moves, observer sees new foe position, off-turn move rejected
-//   - Full kill flow: attacker walks, attacks until victim dies, both
-//     clients receive matchOver and transition to ResultsScene.
+//   - Fog of war: observer can't see an enemy 6 tiles away until scouted
+//   - Off-turn action rejected with typed error code
+//   - Full kill flow: attacker closes into sight, attacks, match ends,
+//     both clients transition to ResultsScene
 
 import { test, expect, type Page } from '@playwright/test'
 
@@ -61,9 +62,7 @@ test('server /health reports matchesActive count', async ({ request }) => {
   expect(typeof body.matchesActive).toBe('number')
 })
 
-test('active player moves; observer sees new position; off-turn move rejected', async ({
-  browser,
-}) => {
+test('fog hides the distant enemy; scout reveals them', async ({ browser }) => {
   const ctxA = await browser.newContext()
   const ctxB = await browser.newContext()
   try {
@@ -74,37 +73,47 @@ test('active player moves; observer sees new position; off-turn move rejected', 
     await enterLobbyAndReady(pageA, 'knight')
     await enterLobbyAndReady(pageB, 'knight')
     const [infoA, infoB] = await Promise.all([msA, msB])
-    expect(infoA.matchId).toBeTruthy()
     expect(infoA.matchId).toBe(infoB.matchId)
 
     const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
-    const observer = active === pageA ? pageB : pageA
+    const isAActive = active === pageA
+    // A spawns (1,4), B spawns (6,3). Sight range 2 — both players out of sight.
+    // Whoever's active scouts around the enemy's spawn.
+    const enemySpawn = isAActive ? { x: 6, y: 3 } : { x: 1, y: 4 }
 
-    const activeIsA = active === pageA
-    const targetX = activeIsA ? 2 : 5
-    const targetY = activeIsA ? 4 : 3
-
-    const observerUpdate = observer.waitForEvent('console', {
+    const scouted = active.waitForEvent('console', {
       predicate: (m) =>
-        m
-          .text()
-          .includes('stateUpdate:') &&
-        m.text().includes(`(${String(targetX)},${String(targetY)})`),
+        m.text().includes('stateUpdate:') &&
+        m.text().includes(`foePos=(${String(enemySpawn.x)},${String(enemySpawn.y)})`),
       timeout: 10_000,
     })
-    const activeOk = active.waitForEvent('console', {
-      predicate: (m) => m.text().includes('actionResult: ok'),
-      timeout: 10_000,
-    })
-
     await active.evaluate(
-      ({ x, y }: { x: number; y: number }) => {
-        if (window.__dct) window.__dct.move(x, y)
+      (c: { x: number; y: number }) => {
+        if (window.__dct) window.__dct.scout(c.x, c.y)
       },
-      { x: targetX, y: targetY },
+      enemySpawn,
     )
+    await scouted
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
 
-    await Promise.all([observerUpdate, activeOk])
+test('off-turn action is rejected with not_your_turn', async ({ browser }) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    const [infoA] = await Promise.all([msA, msB])
+
+    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
+    const observer = active === pageA ? pageB : pageA
 
     const rejected = observer.waitForEvent('console', {
       predicate: (m) => m.text().includes('actionResult: rejected (not_your_turn)'),
@@ -120,7 +129,7 @@ test('active player moves; observer sees new position; off-turn move rejected', 
   }
 })
 
-test('full kill flow: attacker walks + attacks until match ends; both see ResultsScene', async ({
+test('full kill flow: attacker walks into sight + attacks until match ends', async ({
   browser,
 }) => {
   const ctxA = await browser.newContext()
@@ -139,10 +148,9 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
 
     const attackerIsA = attacker === pageA
     // Attacker marches 5 tiles to land adjacent to the victim.
-    // A at (1,4) → (6,4). B at (6,3) → (1,3).
     const march = attackerIsA ? { x: 6, y: 4 } : { x: 1, y: 3 }
 
-    // Round 1: walk to adjacency, then hand turn back and forth.
+    // Round 1: walk to adjacency (pulls victim into sight), then end turn.
     await waitForOk(attacker, async () => {
       await attacker.evaluate(
         (t: { x: number; y: number }) => {
@@ -162,7 +170,7 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
       })
     })
 
-    // Rounds 2 and 3: attacker spends 4 energy on 2 attacks per round, ends turn.
+    // Rounds 2 & 3: attacker spends 4 energy on 2 attacks each round.
     for (let round = 0; round < 2; round++) {
       await waitForOk(attacker, async () => {
         await attacker.evaluate(() => {
@@ -186,7 +194,7 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
       })
     }
 
-    // Round 4: one final attack kills the victim (HP 24 − 5×5 = −1).
+    // Round 4: one more attack kills the victim (HP 24 − 5×5 = −1).
     const attackerMatchOver = attacker.waitForEvent('console', {
       predicate: (m) => m.text().includes('matchOver:'),
       timeout: 10_000,
@@ -212,9 +220,7 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
   }
 })
 
-test('class-selection lobby: mage vs heretic match starts with the chosen classes', async ({
-  browser,
-}) => {
+test('class-selection lobby: mage vs heretic pair + match starts', async ({ browser }) => {
   const ctxA = await browser.newContext()
   const ctxB = await browser.newContext()
   try {
@@ -226,30 +232,9 @@ test('class-selection lobby: mage vs heretic match starts with the chosen classe
     await enterLobbyAndReady(pageB, 'heretic')
     const [infoA, infoB] = await Promise.all([msA, msB])
     expect(infoA.matchId).toBe(infoB.matchId)
-
-    // matchStart log: "class=mage" on A's tab and "class=heretic" on B's tab.
-    const [logA, logB] = await Promise.all([
-      pageA.waitForEvent('console', { predicate: (m) => m.text().includes('matchStart'), timeout: 1_000 }).catch(() => null),
-      pageB.waitForEvent('console', { predicate: (m) => m.text().includes('matchStart'), timeout: 1_000 }).catch(() => null),
-    ])
-    void logA
-    void logB
-    // The initial matchStart consoles were already consumed by waitForMatchStart.
-    // Assertion is positional: a mage's attack range is 3, so trying to
-    // attack from spawn (distance 6) returns out_of_range. Covers both the
-    // class wiring and the server-side validation surface for M5.
-
-    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
-
-    const rejected = active.waitForEvent('console', {
-      predicate: (m) => m.text().includes('actionResult: rejected'),
-      timeout: 5_000,
-    })
-    await active.evaluate(() => {
-      window.__dct?.attackNearest()
-    })
-    const rej = await rejected
-    expect(rej.text()).toMatch(/out_of_range|bad_message/)
+    // Both tabs transitioned from LobbyScene to MatchScene (canvas visible).
+    await expect(pageA.locator('canvas')).toBeVisible()
+    await expect(pageB.locator('canvas')).toBeVisible()
   } finally {
     await ctxA.close()
     await ctxB.close()

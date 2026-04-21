@@ -108,3 +108,6 @@ export const HEX_TRAP_DAMAGE = 4 as const
 export const HEX_TRAP_REVEAL_TTL = 2 as const
 export const DESECRATE_RANGE = 2 as const
 export const DESECRATE_TTL = 3 as const
+
+// --- Scout / Fog of war (SPEC §11) ---
+export const SCOUT_RADIUS = 1 as const // 3×3 footprint = center + 1 in each dimension

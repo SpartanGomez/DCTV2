@@ -2,8 +2,8 @@
 // SPEC §6 — one canonical copy of every grid helper. Used by both server and client.
 // lineOfSight arrives in its own PR when a consumer (M3 attack range / M6 fog) needs it.
 
-import { GRID_HEIGHT, GRID_WIDTH } from './constants.js'
-import type { Position } from './types.js'
+import { CLASS_STATS, GRID_HEIGHT, GRID_WIDTH } from './constants.js'
+import type { MatchState, PlayerId, Position } from './types.js'
 
 export function manhattanDistance(a: Position, b: Position): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
@@ -19,6 +19,119 @@ export function positionKey(pos: Position): string {
 
 export function positionsEqual(a: Position, b: Position): boolean {
   return a.x === b.x && a.y === b.y
+}
+
+/**
+ * Bresenham line between two grid tiles, inclusive of both endpoints.
+ * Used by LoS + fog-of-war vision. Returns the sequence of cells the
+ * line crosses, in order.
+ */
+export function bresenhamLine(from: Position, to: Position): Position[] {
+  const dx = Math.abs(to.x - from.x)
+  const dy = Math.abs(to.y - from.y)
+  const sx = from.x < to.x ? 1 : -1
+  const sy = from.y < to.y ? 1 : -1
+  let err = dx - dy
+  let x = from.x
+  let y = from.y
+  const cells: Position[] = [{ x, y }]
+  while (x !== to.x || y !== to.y) {
+    const e2 = 2 * err
+    if (e2 > -dy) {
+      err -= dy
+      x += sx
+    }
+    if (e2 < dx) {
+      err += dx
+      y += sy
+    }
+    cells.push({ x, y })
+  }
+  return cells
+}
+
+/**
+ * Line of sight between two tiles, blocked by any cell in `blockers` that
+ * lies strictly between them. Endpoints themselves don't block — a unit
+ * on a wall would still "see out" of their own tile (not a real case,
+ * units can't stand on impassable terrain).
+ *
+ * Callers assemble the blocker set: for attack LoS that's pillars + walls
+ * + active Ash Clouds; for fog vision the same set.
+ */
+export function lineOfSight(
+  blockers: ReadonlySet<string>,
+  from: Position,
+  to: Position,
+): boolean {
+  const cells = bresenhamLine(from, to)
+  for (let i = 1; i < cells.length - 1; i++) {
+    const cell = cells[i]
+    if (!cell) continue
+    if (blockers.has(positionKey(cell))) return false
+  }
+  return true
+}
+
+/**
+ * Build the set of position-keys that block vision and ranged LoS:
+ * pillars, walls, and Ash Cloud footprints. Shared by server-side fog
+ * filtering and client-side fog overlay rendering.
+ */
+export function visionBlockers(state: MatchState): Set<string> {
+  const blockers = new Set<string>()
+  for (let y = 0; y < state.grid.tiles.length; y++) {
+    const row = state.grid.tiles[y]
+    if (!row) continue
+    for (let x = 0; x < row.length; x++) {
+      const tile = row[x]
+      if (!tile) continue
+      if (tile.type === 'pillar' || tile.type === 'wall') {
+        blockers.add(positionKey({ x, y }))
+      }
+    }
+  }
+  for (const ac of state.ashClouds) {
+    for (const t of ac.tiles) blockers.add(positionKey(t))
+  }
+  return blockers
+}
+
+/**
+ * The set of tiles a given viewer can see in `state`. SPEC §11:
+ *   - each owned unit reveals tiles within its class sightRange (Manhattan)
+ *     that have unblocked LoS from the unit's tile
+ *   - active Scout reveals add to the set (LoS-ignoring)
+ * Both server (pre-broadcast filter) and client (fog overlay) use this.
+ */
+export function computeVisibleTiles(state: MatchState, viewer: PlayerId): Set<string> {
+  const visible = new Set<string>()
+  const blockers = visionBlockers(state)
+
+  for (const unit of state.units) {
+    if (unit.ownerId !== viewer || unit.hp <= 0) continue
+    const range = CLASS_STATS[unit.classId].sightRange
+    visible.add(positionKey(unit.pos))
+    for (let dy = -range; dy <= range; dy++) {
+      for (let dx = -range; dx <= range; dx++) {
+        if (dx === 0 && dy === 0) continue
+        if (Math.abs(dx) + Math.abs(dy) > range) continue
+        const p: Position = { x: unit.pos.x + dx, y: unit.pos.y + dy }
+        if (!isInBounds(p)) continue
+        if (!lineOfSight(blockers, unit.pos, p)) continue
+        visible.add(positionKey(p))
+      }
+    }
+  }
+
+  for (const reveal of state.scoutReveals) {
+    if (reveal.ownerId !== viewer) continue
+    for (const t of reveal.tiles) {
+      if (isInBounds(t)) visible.add(positionKey(t))
+    }
+  }
+
+  return visible
 }
 
 /**

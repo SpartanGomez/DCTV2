@@ -120,6 +120,7 @@ export function createMatch(input: CreateMatchInput): MatchState {
     pickups: [],
     traps: [],
     ashClouds: [],
+    scoutReveals: [],
     currentTurn,
     turnNumber: 1,
     turnEndsAt: now + turnTimerMs,
@@ -232,6 +233,41 @@ export function resolveMatchEnd(
   return { over: false }
 }
 
+/**
+ * Apply a validated `scout` action: register a 3×3 reveal centered on the
+ * target, clipped to grid bounds. TTL=2 so the reveal spans the rest of
+ * the scout's turn + the opponent's turn; ticks to 0 at the scout's
+ * next turn start.
+ */
+export function applyScout(
+  state: MatchState,
+  action: Extract<GameAction, { kind: 'scout' }>,
+  cost: number,
+): MatchState {
+  const unit = state.units.find((u) => u.id === action.unitId)
+  if (!unit) return state
+  const tiles: Position[] = []
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const p: Position = { x: action.center.x + dx, y: action.center.y + dy }
+      if (p.x < 0 || p.x >= GRID_WIDTH || p.y < 0 || p.y >= GRID_HEIGHT) continue
+      tiles.push(p)
+    }
+  }
+  const reveal = {
+    id: `scout_${unit.ownerId}_${positionKey(action.center)}_${String(state.turnNumber)}`,
+    ownerId: unit.ownerId,
+    tiles,
+    ttl: 2,
+  }
+  const actorEnergy = (state.energy[unit.ownerId] ?? 0) - cost
+  return {
+    ...state,
+    scoutReveals: [...state.scoutReveals, reveal],
+    energy: { ...state.energy, [unit.ownerId]: actorEnergy },
+  }
+}
+
 export interface EndTurnResult {
   state: MatchState
   nextPlayer: PlayerId
@@ -267,6 +303,7 @@ export function applyEndTurn(
   working = decrementStatuses(working, outgoing)
   working = tickAshClouds(working, outgoing)
   working = tickCorrupted(working)
+  working = tickScoutReveals(working, next)
 
   working = applyHazardDoT(working, next)
   working = applyAshCloudDoT(working, next)
@@ -333,6 +370,17 @@ function tickAshClouds(state: MatchState, owner: PlayerId): MatchState {
     if (next.every((ac, i) => ac === state.ashClouds[i])) return state
   }
   return { ...state, ashClouds: next }
+}
+
+function tickScoutReveals(state: MatchState, incoming: PlayerId): MatchState {
+  if (state.scoutReveals.length === 0) return state
+  const next = state.scoutReveals
+    .map((r) => (r.ownerId === incoming ? { ...r, ttl: r.ttl - 1 } : r))
+    .filter((r) => r.ttl > 0)
+  if (next.length === state.scoutReveals.length) {
+    if (next.every((r, i) => r === state.scoutReveals[i])) return state
+  }
+  return { ...state, scoutReveals: next }
 }
 
 function tickCorrupted(state: MatchState): MatchState {

@@ -122,6 +122,19 @@ export interface AshCloud {
   ttl: number
 }
 
+/**
+ * Active Scout reveal. SPEC §11: "Revealed tiles stay visible until the
+ * start of your next turn." `ttl` decrements at the owner's turn start;
+ * at 0 the reveal is removed. Filtered per-recipient by Fog.ts — only
+ * the owner receives their own reveals.
+ */
+export interface ScoutReveal {
+  id: string
+  ownerId: PlayerId
+  tiles: Position[]
+  ttl: number
+}
+
 export interface ArenaDef {
   /** One of "pit" | "ruins" | "bridge" | "shrine" | "maze". */
   slug: string
@@ -145,6 +158,8 @@ export interface MatchState {
   traps: HexTrap[]
   /** Overlays; the renderer draws atop tiles. */
   ashClouds: AshCloud[]
+  /** Active Scout reveals. Fog-filtered per recipient (owner-only). */
+  scoutReveals: ScoutReveal[]
   currentTurn: PlayerId
   /** Monotonic counter from 1. */
   turnNumber: number
