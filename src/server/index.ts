@@ -20,6 +20,14 @@ import {
 } from '../shared/types.js'
 import { applyAttack, applyEndTurn, applyMove, createMatch, resolveMatchEnd } from './GameEngine.js'
 import { validateAttack, validateEndTurn, validateMove } from './validators.js'
+import {
+  applyAbility,
+  applyDefend,
+  resolveTrapTriggers,
+  validateAbility,
+  validateDefend,
+} from './abilities.js'
+import type { ClassId } from '../shared/types.js'
 
 const PORT = Number(process.env.PORT ?? 8080)
 const startedAt = Date.now()
@@ -37,6 +45,8 @@ const TURN_TIMER =
 interface WaitingPlayer {
   id: PlayerId
   socket: WebSocket
+  classId: ClassId | null
+  ready: boolean
 }
 
 interface ActiveMatch {
@@ -111,15 +121,17 @@ function scheduleTurnTimer(match: ActiveMatch): void {
 }
 
 function pairIfReady(): void {
-  while (waiting.length >= 2) {
-    const a = waiting.shift()
-    const b = waiting.shift()
-    if (!a || !b) return
+  while (true) {
+    const readyPair = takeFirstTwoReady()
+    if (!readyPair) return
+    const [a, b] = readyPair
     const mid = makeMatchId(randomUUID())
     const state = createMatch({
       matchId: mid,
       playerA: a.id,
       playerB: b.id,
+      classA: a.classId ?? 'knight',
+      classB: b.classId ?? 'knight',
       turnTimerMs: TURN_TIMER,
     })
     const sockets = new Map<PlayerId, WebSocket>()
@@ -132,10 +144,28 @@ function pairIfReady(): void {
     send(a.socket, { type: 'matchStart', match: state, youAre: a.id })
     send(b.socket, { type: 'matchStart', match: state, youAre: b.id })
     console.log(
-      `[server] match ${mid} started: ${a.id} vs ${b.id}, first turn ${state.currentTurn}`,
+      `[server] match ${mid} started: ${a.id} (${String(a.classId)}) vs ${b.id} (${String(b.classId)}), first turn ${state.currentTurn}`,
     )
     scheduleTurnTimer(match)
   }
+}
+
+function takeFirstTwoReady(): [WaitingPlayer, WaitingPlayer] | null {
+  const readyIdxs: number[] = []
+  for (let i = 0; i < waiting.length && readyIdxs.length < 2; i++) {
+    const w = waiting[i]
+    if (w && w.ready && w.classId !== null) readyIdxs.push(i)
+  }
+  if (readyIdxs.length < 2) return null
+  const [i0, i1] = readyIdxs
+  if (i0 === undefined || i1 === undefined) return null
+  const a = waiting[i0]
+  const b = waiting[i1]
+  if (!a || !b) return null
+  // Remove in descending order so the first index stays valid.
+  waiting.splice(i1, 1)
+  waiting.splice(i0, 1)
+  return [a, b]
 }
 
 function removeWaiting(id: PlayerId): void {
@@ -166,7 +196,69 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
         return
       }
       match.state = applyMove(match.state, action, result.cost)
+      const trapRes = resolveTrapTriggers(match.state, pid, action.path)
+      match.state = trapRes.state
       sendActionResult(socket, true, eventId)
+      if (trapRes.killed) {
+        const end = resolveMatchEnd(match.state)
+        if (end.over) {
+          clearTurnTimer(match)
+          const finalState: MatchState = {
+            ...match.state,
+            phase: 'over',
+            ...(end.winner ? { winner: end.winner } : {}),
+          }
+          match.state = finalState
+          broadcast(match, { type: 'stateUpdate', match: finalState })
+          if (end.winner) {
+            broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
+            console.log(`[server] match ${match.id} over: winner=${end.winner} (hex trap)`)
+          }
+          return
+        }
+      }
+      broadcast(match, { type: 'stateUpdate', match: match.state })
+      return
+    }
+    case 'defend': {
+      const result = validateDefend(match.state, pid, action)
+      if (!result.ok) {
+        sendActionResult(socket, false, eventId, result.code)
+        return
+      }
+      const res = applyDefend(match.state, action, result.cost)
+      match.state = res.state
+      sendActionResult(socket, true, eventId)
+      broadcast(match, { type: 'stateUpdate', match: match.state })
+      return
+    }
+    case 'ability': {
+      const result = validateAbility(match.state, pid, action)
+      if (!result.ok) {
+        sendActionResult(socket, false, eventId, result.code)
+        return
+      }
+      const applyRes = applyAbility(match.state, action, result.cost, result.hpCost ?? 0)
+      match.state = applyRes.state
+      sendActionResult(socket, true, eventId)
+      if (applyRes.killed) {
+        const end = resolveMatchEnd(match.state)
+        if (end.over) {
+          clearTurnTimer(match)
+          const finalState: MatchState = {
+            ...match.state,
+            phase: 'over',
+            ...(end.winner ? { winner: end.winner } : {}),
+          }
+          match.state = finalState
+          broadcast(match, { type: 'stateUpdate', match: finalState })
+          if (end.winner) {
+            broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
+            console.log(`[server] match ${match.id} over: winner=${end.winner} (ability)`)
+          }
+          return
+        }
+      }
       broadcast(match, { type: 'stateUpdate', match: match.state })
       return
     }
@@ -215,6 +307,16 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       match.state = next.state
       sendActionResult(socket, true, eventId)
       broadcast(match, { type: 'stateUpdate', match: match.state })
+      if (next.ended) {
+        clearTurnTimer(match)
+        if (next.ended.winner) {
+          broadcast(match, { type: 'matchOver', winner: next.ended.winner, final: match.state })
+          console.log(
+            `[server] match ${match.id} over: winner=${next.ended.winner} (tick DoT)`,
+          )
+        }
+        return
+      }
       broadcast(match, {
         type: 'turnStart',
         playerId: next.nextPlayer,
@@ -223,9 +325,7 @@ function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): voi
       scheduleTurnTimer(match)
       return
     }
-    case 'defend':
     case 'scout':
-    case 'ability':
     case 'usePickup':
     case 'kneel':
       sendActionResult(socket, false, eventId, 'bad_message')
@@ -254,13 +354,22 @@ function handleMessage(pid: PlayerId, socket: WebSocket, raw: RawData): void {
     case 'action':
       handleAction(pid, socket, parsed.action)
       return
+    case 'selectClass': {
+      const w = waiting.find((x) => x.id === pid)
+      if (w) w.classId = parsed.classId
+      return
+    }
+    case 'ready': {
+      const w = waiting.find((x) => x.id === pid)
+      if (w) w.ready = true
+      pairIfReady()
+      return
+    }
     case 'joinTournament':
-    case 'selectClass':
-    case 'ready':
     case 'selectPerk':
     case 'spectate':
     case 'leaveSpectator':
-      // M2 ignores these; M5/M10 wire them up.
+      // M10 wires these up.
       return
   }
 }
@@ -291,10 +400,8 @@ wss.on('connection', (socket: WebSocket) => {
   const sessionToken = randomUUID()
   send(socket, { type: 'hello', serverVersion: SERVER_VERSION, sessionToken })
 
-  waiting.push({ id: pid, socket })
+  waiting.push({ id: pid, socket, classId: null, ready: false })
   console.log(`[server] ${pid} connected (waiting=${String(waiting.length)})`)
-
-  pairIfReady()
 
   socket.on('message', (raw) => {
     handleMessage(pid, socket, raw)

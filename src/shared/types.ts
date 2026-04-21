@@ -37,6 +37,18 @@ export type PerkId =
 
 export type ClassId = 'knight' | 'mage' | 'heretic'
 
+/** SPEC §13 — every ability each class can cast. */
+export type AbilityId =
+  | 'shield_wall'
+  | 'vanguard_charge'
+  | 'iron_stance'
+  | 'cinder_bolt'
+  | 'ash_cloud'
+  | 'blink'
+  | 'blood_tithe'
+  | 'hex_trap'
+  | 'desecrate'
+
 export type TerrainType =
   | 'stone'
   | 'high_ground'

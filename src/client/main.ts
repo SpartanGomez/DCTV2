@@ -5,11 +5,12 @@
 import { connect, type NetworkClient } from './network.js'
 import { Renderer } from './Renderer.js'
 import { SceneManager } from './SceneManager.js'
+import { LobbyScene } from './scenes/LobbyScene.js'
 import { MatchScene } from './scenes/MatchScene.js'
 import { ResultsScene } from './scenes/ResultsScene.js'
 import { manhattanDistance, orthogonalPath } from '../shared/grid.js'
-import { CLASS_STATS } from '../shared/constants.js'
-import type { PlayerId, Position, UnitId } from '../shared/types.js'
+import { CLASS_ABILITIES, CLASS_STATS } from '../shared/constants.js'
+import type { AbilityId, ClassId, PlayerId, Position, UnitId } from '../shared/types.js'
 
 declare global {
   interface Window {
@@ -19,9 +20,13 @@ declare global {
      * from non-test code, stop.
      */
     __dct?: {
+      selectClass: (classId: ClassId) => void
+      ready: () => void
       move: (x: number, y: number) => void
       endTurn: () => void
+      defend: () => void
       attackNearest: () => void
+      ability: (index: 0 | 1 | 2, target?: { x: number; y: number }) => void
     }
   }
 }
@@ -66,10 +71,24 @@ async function main(): Promise<void> {
   }
 
   console.log(`[client] hello from server (version ${net.serverVersion})`)
-  setBootText('Dark Council Tactic — waiting for opponent…')
+  hideBoot()
 
   let activeScene: MatchScene | null = null
   let myPlayerId: PlayerId | null = null
+  let myClass: ClassId = 'knight'
+
+  const lobby = new LobbyScene({
+    onSelect: (classId) => {
+      myClass = classId
+      net.send({ type: 'selectClass', classId })
+      console.log(`[client] selectClass: ${classId}`)
+    },
+    onReady: () => {
+      net.send({ type: 'ready' })
+      console.log(`[client] ready`)
+    },
+  })
+  scenes.show(lobby)
 
   const sendMove = (target: Position): void => {
     if (!activeScene) return
@@ -118,14 +137,65 @@ async function main(): Promise<void> {
     net.send({ type: 'action', action: { kind: 'attack', unitId: unit.id, targetId } })
   }
 
+  const sendDefend = (): void => {
+    if (!activeScene) return
+    const unit = activeScene.getOwnUnit()
+    if (!unit) return
+    if (activeScene.currentState.currentTurn !== myPlayerId) return
+    net.send({ type: 'action', action: { kind: 'defend', unitId: unit.id } })
+  }
+
+  const sendAbility = (index: 0 | 1 | 2, target?: Position): void => {
+    if (!activeScene) return
+    const unit = activeScene.getOwnUnit()
+    if (!unit) return
+    if (activeScene.currentState.currentTurn !== myPlayerId) return
+    const kit = CLASS_ABILITIES[unit.classId]
+    const abilityId: AbilityId | undefined = kit[index]
+    if (!abilityId) return
+    // For self-targeted abilities (shield_wall, iron_stance, blood_tithe)
+    // we don't need a target. For targeted abilities we need the target.
+    const needsTarget = !['shield_wall', 'iron_stance', 'blood_tithe'].includes(abilityId)
+    if (needsTarget && !target) return
+    // For attack-like abilities we may need targetId instead; smoke uses
+    // the __dct.ability hook which passes a target Position — client picks
+    // nearest enemy if that position matches one.
+    let targetId: UnitId | undefined
+    if (abilityId === 'cinder_bolt' && target) {
+      const enemy = activeScene.currentState.units.find(
+        (u) => u.ownerId !== myPlayerId && u.hp > 0 && u.pos.x === target.x && u.pos.y === target.y,
+      )
+      if (!enemy) return
+      targetId = enemy.id
+    }
+    net.send({
+      type: 'action',
+      action: {
+        kind: 'ability',
+        unitId: unit.id,
+        abilityId,
+        ...(target ? { target } : {}),
+        ...(targetId ? { targetId } : {}),
+      },
+    })
+  }
+
   window.addEventListener('keydown', (ev) => {
     if (ev.key === 'e' || ev.key === 'E') sendEndTurn()
+    if (ev.key === 'd' || ev.key === 'D') sendDefend()
   })
 
   if (import.meta.env.DEV) {
     // Test-only hook. Bypasses client-side UX guards so smoke tests can
     // verify server-authoritative rejection paths (e.g. not_your_turn).
     window.__dct = {
+      selectClass: (classId) => {
+        myClass = classId
+        net.send({ type: 'selectClass', classId })
+      },
+      ready: () => {
+        net.send({ type: 'ready' })
+      },
       move: (x, y) => {
         const unit = activeScene?.getOwnUnit()
         if (!unit) return
@@ -136,14 +206,24 @@ async function main(): Promise<void> {
       endTurn: () => {
         net.send({ type: 'action', action: { kind: 'endTurn' } })
       },
+      defend: () => {
+        const unit = activeScene?.getOwnUnit()
+        if (!unit) return
+        net.send({ type: 'action', action: { kind: 'defend', unitId: unit.id } })
+      },
       attackNearest: sendAttackNearest,
+      ability: (index, target) => {
+        sendAbility(index, target)
+      },
     }
   }
 
   net.on('matchStart', (msg) => {
     myPlayerId = msg.youAre
+    const myUnit = msg.match.units.find((u) => u.ownerId === msg.youAre)
+    const myClassFromState = myUnit?.classId ?? myClass
     console.log(
-      `[client] matchStart: match=${msg.match.matchId} units=${String(msg.match.units.length)} youAre=${msg.youAre} currentTurn=${msg.match.currentTurn}`,
+      `[client] matchStart: match=${msg.match.matchId} units=${String(msg.match.units.length)} youAre=${msg.youAre} class=${myClassFromState} currentTurn=${msg.match.currentTurn}`,
     )
     hideBoot()
     activeScene = new MatchScene(msg.match, msg.youAre, { onTileClick: sendMove })
