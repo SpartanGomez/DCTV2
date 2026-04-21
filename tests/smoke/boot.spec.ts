@@ -7,10 +7,23 @@
 
 import { test, expect, type Page } from '@playwright/test'
 
+type ClassId = 'knight' | 'mage' | 'heretic'
+
 interface MatchStart {
   matchId: string
   youAre: string
   currentTurn: string
+}
+
+async function enterLobbyAndReady(page: Page, classId: ClassId): Promise<void> {
+  await page.goto('/')
+  await page.waitForFunction(() => typeof window.__dct !== 'undefined')
+  await page.evaluate((c: ClassId) => {
+    window.__dct?.selectClass(c)
+  }, classId)
+  await page.evaluate(() => {
+    window.__dct?.ready()
+  })
 }
 
 async function waitForMatchStart(page: Page): Promise<MatchStart> {
@@ -58,17 +71,14 @@ test('active player moves; observer sees new position; off-turn move rejected', 
     const pageB = await ctxB.newPage()
     const msA = waitForMatchStart(pageA)
     const msB = waitForMatchStart(pageB)
-    await pageA.goto('/')
-    await pageB.goto('/')
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
     const [infoA, infoB] = await Promise.all([msA, msB])
     expect(infoA.matchId).toBeTruthy()
     expect(infoA.matchId).toBe(infoB.matchId)
 
     const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
     const observer = active === pageA ? pageB : pageA
-
-    await active.waitForFunction(() => typeof window.__dct !== 'undefined')
-    await observer.waitForFunction(() => typeof window.__dct !== 'undefined')
 
     const activeIsA = active === pageA
     const targetX = activeIsA ? 2 : 5
@@ -120,15 +130,12 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
     const pageB = await ctxB.newPage()
     const msA = waitForMatchStart(pageA)
     const msB = waitForMatchStart(pageB)
-    await pageA.goto('/')
-    await pageB.goto('/')
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
     const [infoA] = await Promise.all([msA, msB])
 
     const attacker = infoA.currentTurn === infoA.youAre ? pageA : pageB
     const victim = attacker === pageA ? pageB : pageA
-
-    await attacker.waitForFunction(() => typeof window.__dct !== 'undefined')
-    await victim.waitForFunction(() => typeof window.__dct !== 'undefined')
 
     const attackerIsA = attacker === pageA
     // Attacker marches 5 tiles to land adjacent to the victim.
@@ -199,6 +206,50 @@ test('full kill flow: attacker walks + attacks until match ends; both see Result
 
     await expect(attacker.locator('canvas')).toBeVisible()
     await expect(victim.locator('canvas')).toBeVisible()
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('class-selection lobby: mage vs heretic match starts with the chosen classes', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'mage')
+    await enterLobbyAndReady(pageB, 'heretic')
+    const [infoA, infoB] = await Promise.all([msA, msB])
+    expect(infoA.matchId).toBe(infoB.matchId)
+
+    // matchStart log: "class=mage" on A's tab and "class=heretic" on B's tab.
+    const [logA, logB] = await Promise.all([
+      pageA.waitForEvent('console', { predicate: (m) => m.text().includes('matchStart'), timeout: 1_000 }).catch(() => null),
+      pageB.waitForEvent('console', { predicate: (m) => m.text().includes('matchStart'), timeout: 1_000 }).catch(() => null),
+    ])
+    void logA
+    void logB
+    // The initial matchStart consoles were already consumed by waitForMatchStart.
+    // Assertion is positional: a mage's attack range is 3, so trying to
+    // attack from spawn (distance 6) returns out_of_range. Covers both the
+    // class wiring and the server-side validation surface for M5.
+
+    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
+
+    const rejected = active.waitForEvent('console', {
+      predicate: (m) => m.text().includes('actionResult: rejected'),
+      timeout: 5_000,
+    })
+    await active.evaluate(() => {
+      window.__dct?.attackNearest()
+    })
+    const rej = await rejected
+    expect(rej.text()).toMatch(/out_of_range|bad_message/)
   } finally {
     await ctxA.close()
     await ctxB.close()

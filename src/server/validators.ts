@@ -5,6 +5,7 @@
 import {
   ATTACK_COST,
   CLASS_STATS,
+  IRON_STANCE_EXTRA_MOVE_COST,
   MOVE_COST_DEFAULT,
   MOVE_COST_DIFFICULT,
 } from '../shared/constants.js'
@@ -79,6 +80,9 @@ export function validateMove(
   let prevTile = getTile(state, unit.pos)
   if (!prevTile) return { ok: false, code: 'invalid_path' }
 
+  const ironStanceTax = unit.statuses.some((s) => s.kind === 'iron_stance')
+    ? IRON_STANCE_EXTRA_MOVE_COST
+    : 0
   let totalCost = 0
   for (const step of action.path) {
     if (!isInBounds(step)) return { ok: false, code: 'invalid_path' }
@@ -89,7 +93,7 @@ export function validateMove(
       return { ok: false, code: 'tile_impassable' }
     }
     if (occupied.has(positionKey(step))) return { ok: false, code: 'tile_occupied' }
-    totalCost += moveCostInto(prevTile, tile)
+    totalCost += moveCostInto(prevTile, tile) + ironStanceTax
     prev = step
     prevTile = tile
   }

@@ -1,7 +1,7 @@
 // src/shared/constants.ts
 // SPEC §4, §18 — every game number lives here. No inline magic values anywhere else.
 
-import type { ClassId } from './types.js'
+import type { AbilityId, ClassId } from './types.js'
 
 /** Bumped per release; reported in the `hello` message. */
 export const SERVER_VERSION = '0.1.0-m0' as const
@@ -66,3 +66,45 @@ export const TILE_WIDTH = 64 as const
 export const TILE_HEIGHT = 32 as const
 export const TILE_DEPTH = 28 as const
 export const SPRITE_CANVAS = 64 as const
+
+// --- Abilities (SPEC §13) ---
+export const CLASS_ABILITIES: Record<ClassId, readonly [AbilityId, AbilityId, AbilityId]> = {
+  knight: ['shield_wall', 'vanguard_charge', 'iron_stance'],
+  mage: ['cinder_bolt', 'ash_cloud', 'blink'],
+  heretic: ['blood_tithe', 'hex_trap', 'desecrate'],
+}
+
+export const ABILITY_ENERGY_COST: Record<AbilityId, number> = {
+  shield_wall: 1,
+  vanguard_charge: 3,
+  iron_stance: 2, // to turn on; toggling off is 0 — server checks state
+  cinder_bolt: 2,
+  ash_cloud: 3,
+  blink: 2,
+  blood_tithe: 0,
+  hex_trap: 2,
+  desecrate: 3,
+}
+
+// HP sacrifices live separately so validators can gate self-kill (SPEC §8.4).
+export const ABILITY_HP_COST: Partial<Record<AbilityId, number>> = {
+  blood_tithe: 4,
+}
+
+// --- Ability-specific values (SPEC §13) ---
+export const VANGUARD_CHARGE_MAX_TILES = 3 as const
+export const VANGUARD_CHARGE_IMPACT_DAMAGE = 4 as const
+export const VANGUARD_CHARGE_BLOCKED_BONUS = 2 as const
+export const IRON_STANCE_EXTRA_MOVE_COST = 1 as const
+export const CINDER_BOLT_DAMAGE = 5 as const
+export const CINDER_BOLT_RANGE = 3 as const
+export const ASH_CLOUD_RANGE = 3 as const
+export const ASH_CLOUD_TTL = 2 as const
+export const BLINK_RANGE = 2 as const
+export const BLOOD_TITHE_ENERGY_GAIN = 2 as const
+export const BLOOD_TITHE_HP_FLOOR = 1 as const
+export const HEX_TRAP_RANGE = 2 as const
+export const HEX_TRAP_DAMAGE = 4 as const
+export const HEX_TRAP_REVEAL_TTL = 2 as const
+export const DESECRATE_RANGE = 2 as const
+export const DESECRATE_TTL = 3 as const

@@ -5,17 +5,22 @@
 // M1 scope: createMatch only. Actions (move/attack/etc.) arrive in M2+.
 
 import {
+  ASH_CLOUD_DOT,
   BASE_ENERGY_PER_TURN,
   CLASS_STATS,
+  CORRUPTED_ENEMY_DOT,
+  CORRUPTED_HERETIC_HEAL,
   COVER_RUBBLE_REDUCTION,
   DEFEND_REDUCTION,
   FORTIFY_REDUCTION,
   GRID_HEIGHT,
   GRID_WIDTH,
+  HAZARD_DOT,
   HIGH_GROUND_DAMAGE_BONUS,
   MIN_DIRECT_DAMAGE,
   TURN_TIMER_MS,
 } from '../shared/constants.js'
+import { positionKey } from '../shared/grid.js'
 import {
   type ClassId,
   type GameAction,
@@ -24,6 +29,7 @@ import {
   type PerkId,
   type PlayerId,
   type Position,
+  type Status,
   type TerrainTile,
   type Unit,
   unitId,
@@ -229,29 +235,217 @@ export function resolveMatchEnd(
 export interface EndTurnResult {
   state: MatchState
   nextPlayer: PlayerId
+  /** Populated when the turn-start tick (DoTs, corrupted) ended the match. */
+  ended?: { winner: PlayerId | null }
 }
 
 /**
- * Apply a validated `endTurn`: hand the turn to the other player and refresh
- * their energy. Turn timer resets from the injected clock.
+ * Apply a validated `endTurn` and run the turn-start tick (SPEC §8.6):
+ *   1. Decrement TTLs on outgoing player's statuses; remove expired.
+ *   2. Decrement Ash Cloud TTLs owned by the outgoing player; remove expired.
+ *   3. Decrement Corrupted-tile TTLs; revert expired to their baseType.
+ *   4. Apply hazard DoT to incoming units standing on hazards.
+ *   5. Apply Ash Cloud DoT.
+ *   6. Apply Corrupted tile effects (2 dmg to non-Heretic, +1 heal to the Heretic).
+ *   7. Clear the Heretic's `blood_tithe_used` flag for the incoming turn.
+ *   8. Refresh incoming player's energy, increment turn number, reset timer.
+ *
+ * Match-end detection (§8.7) is the caller's job — read `ended` from the
+ * return value. `ended.winner === null` signals a draw / double-KO.
  */
 export function applyEndTurn(
   state: MatchState,
   now: number,
   turnTimerMs: number = TURN_TIMER_MS,
 ): EndTurnResult {
-  const players = Array.from(new Set(state.units.map((u) => u.ownerId)))
-  const next = players.find((p) => p !== state.currentTurn) ?? state.currentTurn
-  const refreshed = state.maxEnergy[next] ?? BASE_ENERGY_PER_TURN
-  const energy: Record<PlayerId, number> = { ...state.energy, [next]: refreshed }
+  const outgoing = state.currentTurn
+  const players = uniquePlayers(state)
+  const next = players.find((p) => p !== outgoing) ?? outgoing
+
+  let working: MatchState = state
+
+  working = decrementStatuses(working, outgoing)
+  working = tickAshClouds(working, outgoing)
+  working = tickCorrupted(working)
+
+  working = applyHazardDoT(working, next)
+  working = applyAshCloudDoT(working, next)
+  working = applyCorruptedEffects(working, next)
+
+  working = clearBloodTitheFlag(working, next)
+
+  const ended = checkEnded(working)
+  if (ended) {
+    return {
+      state: { ...working, phase: 'over', ...(ended.winner ? { winner: ended.winner } : {}) },
+      nextPlayer: next,
+      ended,
+    }
+  }
+
+  const refreshed = working.maxEnergy[next] ?? BASE_ENERGY_PER_TURN
+  const energy: Record<PlayerId, number> = { ...working.energy, [next]: refreshed }
   return {
     state: {
-      ...state,
+      ...working,
       currentTurn: next,
-      turnNumber: state.turnNumber + 1,
+      turnNumber: working.turnNumber + 1,
       turnEndsAt: now + turnTimerMs,
       energy,
     },
     nextPlayer: next,
   }
+}
+
+// --- tick helpers -------------------------------------------------------
+
+function uniquePlayers(state: MatchState): PlayerId[] {
+  const seen = new Set<PlayerId>()
+  for (const u of state.units) seen.add(u.ownerId)
+  for (const pid of Object.keys(state.energy) as PlayerId[]) seen.add(pid)
+  return Array.from(seen)
+}
+
+function decrementStatuses(state: MatchState, owner: PlayerId): MatchState {
+  const units = state.units.map((u) => {
+    if (u.ownerId !== owner) return u
+    const kept: Status[] = []
+    for (const s of u.statuses) {
+      if (s.ttl === -1) {
+        kept.push(s)
+        continue
+      }
+      const nextTtl = s.ttl - 1
+      if (nextTtl > 0) kept.push({ ...s, ttl: nextTtl })
+    }
+    if (kept.length === u.statuses.length && kept.every((s, i) => s === u.statuses[i])) return u
+    return { ...u, statuses: kept }
+  })
+  return { ...state, units }
+}
+
+function tickAshClouds(state: MatchState, owner: PlayerId): MatchState {
+  const next = state.ashClouds
+    .map((ac) => (ac.ownerId === owner ? { ...ac, ttl: ac.ttl - 1 } : ac))
+    .filter((ac) => ac.ttl > 0)
+  if (next.length === state.ashClouds.length) {
+    // No expirations; only ttl mutated.
+    if (next.every((ac, i) => ac === state.ashClouds[i])) return state
+  }
+  return { ...state, ashClouds: next }
+}
+
+function tickCorrupted(state: MatchState): MatchState {
+  let changed = false
+  const tiles = state.grid.tiles.map((row) =>
+    row.map((tile) => {
+      if (tile.type !== 'corrupted') return tile
+      const nextTtl = (tile.ttl ?? 0) - 1
+      if (nextTtl > 0) {
+        changed = true
+        return { ...tile, ttl: nextTtl }
+      }
+      changed = true
+      const base = tile.baseType ?? 'stone'
+      return { type: base }
+    }),
+  )
+  if (!changed) return state
+  return { ...state, grid: { ...state.grid, tiles } }
+}
+
+function damageUnitById(state: MatchState, unitIdArg: Unit['id'], damage: number): MatchState {
+  const units = state.units
+    .map((u) => (u.id === unitIdArg ? { ...u, hp: Math.max(0, u.hp - damage) } : u))
+    .filter((u) => u.hp > 0)
+  return { ...state, units }
+}
+
+function healUnitById(state: MatchState, unitIdArg: Unit['id'], amount: number, cap: number): MatchState {
+  const units = state.units.map((u) =>
+    u.id === unitIdArg ? { ...u, hp: Math.min(cap, u.hp + amount) } : u,
+  )
+  return { ...state, units }
+}
+
+function applyHazardDoT(state: MatchState, owner: PlayerId): MatchState {
+  let working = state
+  // Snapshot ids so we don't iterate a mutating array.
+  const ids = working.units
+    .filter((u) => u.ownerId === owner && u.hp > 0)
+    .map((u) => u.id)
+  for (const id of ids) {
+    const unit = working.units.find((u) => u.id === id)
+    if (!unit) continue
+    const tile = working.grid.tiles[unit.pos.y]?.[unit.pos.x]
+    if (!tile) continue
+    if (
+      tile.type === 'hazard_fire' ||
+      tile.type === 'hazard_acid' ||
+      tile.type === 'hazard_void'
+    ) {
+      working = damageUnitById(working, unit.id, HAZARD_DOT)
+    }
+  }
+  return working
+}
+
+function applyAshCloudDoT(state: MatchState, owner: PlayerId): MatchState {
+  if (state.ashClouds.length === 0) return state
+  let working = state
+  const cloudTiles = new Set<string>()
+  for (const ac of working.ashClouds) for (const t of ac.tiles) cloudTiles.add(positionKey(t))
+  const ids = working.units
+    .filter((u) => u.ownerId === owner && u.hp > 0)
+    .map((u) => u.id)
+  for (const id of ids) {
+    const unit = working.units.find((u) => u.id === id)
+    if (!unit) continue
+    if (cloudTiles.has(positionKey(unit.pos))) {
+      working = damageUnitById(working, unit.id, ASH_CLOUD_DOT)
+    }
+  }
+  return working
+}
+
+function applyCorruptedEffects(state: MatchState, owner: PlayerId): MatchState {
+  let working = state
+  const ids = working.units
+    .filter((u) => u.ownerId === owner && u.hp > 0)
+    .map((u) => u.id)
+  for (const id of ids) {
+    const unit = working.units.find((u) => u.id === id)
+    if (!unit) continue
+    const tile = working.grid.tiles[unit.pos.y]?.[unit.pos.x]
+    if (tile?.type !== 'corrupted') continue
+    if (unit.classId === 'heretic') {
+      working = healUnitById(working, unit.id, CORRUPTED_HERETIC_HEAL, unit.maxHp)
+    } else {
+      working = damageUnitById(working, unit.id, CORRUPTED_ENEMY_DOT)
+    }
+  }
+  return working
+}
+
+function clearBloodTitheFlag(state: MatchState, owner: PlayerId): MatchState {
+  let changed = false
+  const units = state.units.map((u) => {
+    if (u.ownerId !== owner) return u
+    if (!u.statuses.some((s) => s.kind === 'blood_tithe_used')) return u
+    changed = true
+    return { ...u, statuses: u.statuses.filter((s) => s.kind !== 'blood_tithe_used') }
+  })
+  if (!changed) return state
+  return { ...state, units }
+}
+
+function checkEnded(state: MatchState): { winner: PlayerId | null } | null {
+  const livingByOwner = new Map<PlayerId, number>()
+  for (const u of state.units) {
+    if (u.hp > 0) livingByOwner.set(u.ownerId, (livingByOwner.get(u.ownerId) ?? 0) + 1)
+  }
+  const owners = Array.from(livingByOwner.keys())
+  if (owners.length === 1) return { winner: owners[0] ?? null }
+  if (owners.length === 0) return { winner: null }
+  return null
 }
