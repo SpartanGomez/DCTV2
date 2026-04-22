@@ -12,6 +12,7 @@ import {
   CORRUPTED_HERETIC_HEAL,
   COVER_RUBBLE_REDUCTION,
   DEFEND_REDUCTION,
+  DEFAULT_TILE_HEIGHT,
   ENERGY_SURGE_PER_TURN,
   FORTIFY_REDUCTION,
   GRID_HEIGHT,
@@ -21,7 +22,7 @@ import {
   MIN_DIRECT_DAMAGE,
   TURN_TIMER_MS,
 } from '../shared/constants.js'
-import { positionKey } from '../shared/grid.js'
+import { facingToward, positionKey } from '../shared/grid.js'
 import {
   type ArenaDef,
   type ClassId,
@@ -80,12 +81,15 @@ export function createMatch(input: CreateMatchInput): MatchState {
   const arenaSlug = input.arena?.slug ?? 'pit'
 
   // Build grid tiles from arena or fallback to all-stone.
+  // SPEC v2 §6.3 — every tile carries a height (default 1). Arenas may override
+  // per-tile via the optional `heights` table; absent cells default.
   const tiles: TerrainTile[][] = []
   for (let y = 0; y < GRID_HEIGHT; y++) {
     const row: TerrainTile[] = []
     for (let x = 0; x < GRID_WIDTH; x++) {
       const terrainType = input.arena?.tiles[y]?.[x] ?? 'stone'
-      row.push({ type: terrainType })
+      const height = input.arena?.heights?.[y]?.[x] ?? DEFAULT_TILE_HEIGHT
+      row.push({ type: terrainType, height })
     }
     tiles.push(row)
   }
@@ -116,8 +120,9 @@ export function createMatch(input: CreateMatchInput): MatchState {
 
   // Apply second_wind (+4 HP) and mist_cloak (spawn on shadow) and
   // counterspell/first_strike/ghost_step initial statuses.
-  const unitA = buildUnit(input.matchId, 'a', input.playerA, classA, spawnA, perksA, tiles)
-  const unitB = buildUnit(input.matchId, 'b', input.playerB, classB, spawnB, perksB, tiles)
+  // SPEC v2 §6.6 — initial facing points toward the enemy's spawn.
+  const unitA = buildUnit(input.matchId, 'a', input.playerA, classA, spawnA, spawnB, perksA, tiles)
+  const unitB = buildUnit(input.matchId, 'b', input.playerB, classB, spawnB, spawnA, perksB, tiles)
 
   const currentTurn = firstTurn === 'A' ? input.playerA : input.playerB
   const firstPlayer = currentTurn
@@ -153,6 +158,7 @@ function buildUnit(
   ownerId: PlayerId,
   classId: ClassId,
   defaultSpawn: Position,
+  enemySpawn: Position,
   perks: PerkId[],
   tiles: TerrainTile[][],
 ): Unit {
@@ -174,11 +180,16 @@ function buildUnit(
   }
   // first_strike_ready and ghost_step_ready are added per turn-start; see applyTurnStartPerkStatuses.
 
+  // SPEC v2 §6.6 — face the enemy's spawn at match start. The Heretic looks
+  // predatory out of the gate; the Knight squares up; the Mage fixes their gaze.
+  const facing = facingToward(pos, enemySpawn)
+
   return {
     id: unitId(`u_${mid}_${suffix}`),
     ownerId,
     classId,
     pos,
+    facing,
     hp,
     maxHp,
     statuses,
@@ -615,7 +626,8 @@ function tickCorrupted(state: MatchState): MatchState {
       }
       changed = true
       const base = tile.baseType ?? 'stone'
-      return { type: base }
+      // SPEC v2 §6.3 — height persists through corrupt-and-revert.
+      return { type: base, height: tile.height }
     }),
   )
   if (!changed) return state

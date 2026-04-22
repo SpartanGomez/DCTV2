@@ -99,7 +99,7 @@ describe('validateMove — path shape', () => {
     const state = fresh()
     const row = state.grid.tiles[4]
     if (!row) throw new Error('row missing')
-    row[2] = { type: 'pillar' }
+    row[2] = { type: 'pillar', height: 1 }
     const r = validateMove(state, PA, moveAction([{ x: 2, y: 4 }]))
     expect(r).toEqual({ ok: false, code: 'tile_impassable' })
   })

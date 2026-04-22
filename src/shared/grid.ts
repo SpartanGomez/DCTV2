@@ -1,9 +1,9 @@
 // src/shared/grid.ts
-// SPEC §6 — one canonical copy of every grid helper. Used by both server and client.
-// lineOfSight arrives in its own PR when a consumer (M3 attack range / M6 fog) needs it.
+// SPEC v2 §6 — one canonical copy of every grid helper. Used by both server and client.
+// Includes the 3D-aware LoS + height rules (v2 M7.5).
 
-import { CLASS_STATS, GRID_HEIGHT, GRID_WIDTH } from './constants.js'
-import type { MatchState, PlayerId, Position } from './types.js'
+import { CLASS_STATS, DEFAULT_TILE_HEIGHT, GRID_HEIGHT, GRID_WIDTH } from './constants.js'
+import type { Facing, MatchState, PlayerId, Position } from './types.js'
 
 export function manhattanDistance(a: Position, b: Position): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
@@ -155,4 +155,120 @@ export function orthogonalPath(from: Position, to: Position): Position[] {
     path.push({ x, y })
   }
   return path
+}
+
+// ============================================================
+// SPEC v2 — 3D terrain helpers (M7.5)
+// ============================================================
+
+/**
+ * SPEC v2 §6.3 — resolve a tile's stack height, defaulting when absent.
+ * Tiles are expected to always carry `height` post-M7.5, but this helper
+ * tolerates undefined for transitional callers.
+ */
+export function tileHeight(state: MatchState, pos: Position): number {
+  const row = state.grid.tiles[pos.y]
+  if (!row) return DEFAULT_TILE_HEIGHT
+  const t = row[pos.x]
+  if (!t) return DEFAULT_TILE_HEIGHT
+  return t.height
+}
+
+/**
+ * SPEC v2 §6.3 — can a unit with `jump` stat traverse `fromH` → `toH` in one
+ * step? `|Δh| ≤ 1` is free; anything greater requires `jump ≥ |Δh|`.
+ */
+export function canTraverseHeight(fromH: number, toH: number, jump: number): boolean {
+  const dh = Math.abs(toH - fromH)
+  if (dh <= 1) return true
+  return jump >= dh
+}
+
+/**
+ * SPEC v2 §6.3, §6.5 — build an effective-blocking-height map for every column.
+ * Used by `lineOfSight3D`. Pillar/wall contribute `Infinity` regardless of
+ * stack height (they're walls, not step-ups). Ash Cloud footprints also
+ * contribute `Infinity`. Everything else contributes its `Tile.height`.
+ *
+ * Position key format: same as `positionKey` (e.g. "3,5").
+ */
+export function visionBlockerHeights(state: MatchState): Map<string, number> {
+  const heights = new Map<string, number>()
+  for (let y = 0; y < state.grid.tiles.length; y++) {
+    const row = state.grid.tiles[y]
+    if (!row) continue
+    for (let x = 0; x < row.length; x++) {
+      const t = row[x]
+      if (!t) continue
+      if (t.type === 'pillar' || t.type === 'wall') {
+        heights.set(positionKey({ x, y }), Number.POSITIVE_INFINITY)
+      } else {
+        heights.set(positionKey({ x, y }), t.height)
+      }
+    }
+  }
+  for (const ac of state.ashClouds) {
+    for (const t of ac.tiles) heights.set(positionKey(t), Number.POSITIVE_INFINITY)
+  }
+  return heights
+}
+
+/**
+ * SPEC v2 §5.5 / §6.3 — 3D-aware line of sight. Draws the Bresenham cell line
+ * from `from` → `to` and checks each intermediate column. An intermediate cell
+ * blocks the line iff its effective blocking height (from `heights`) is
+ * strictly greater than the line's height as it passes over that column.
+ *
+ * Line height interpolates linearly between `fromH` and `toH` at the fractional
+ * position of each cell along the line. Endpoints never block (a unit standing
+ * on a pillar — not a real case, but defensively — still "sees out" of its
+ * own tile).
+ *
+ * Grazing the top of an obstruction (line height equals obstruction height)
+ * does NOT block. "Strictly greater than" is the threshold.
+ *
+ * `heights` is typically built via `visionBlockerHeights(state)`; callers may
+ * substitute a custom map for unit tests or fog filtering.
+ */
+export function lineOfSight3D(
+  from: Position,
+  fromH: number,
+  to: Position,
+  toH: number,
+  heights: ReadonlyMap<string, number>,
+): boolean {
+  const cells = bresenhamLine(from, to)
+  if (cells.length <= 2) return true // adjacent or same cell — no intermediates
+  const denom = cells.length - 1
+  for (let i = 1; i < cells.length - 1; i++) {
+    const cell = cells[i]
+    if (!cell) continue
+    const t = i / denom
+    const lineZ = fromH + (toH - fromH) * t
+    const colH = heights.get(positionKey(cell)) ?? DEFAULT_TILE_HEIGHT
+    if (colH > lineZ) return false
+  }
+  return true
+}
+
+// ============================================================
+// SPEC v2 §6.6 — Facing
+// ============================================================
+
+/**
+ * Compute the cardinal facing `from` should assume to face toward `to`.
+ * Uses the dominant axis: if `|dx| >= |dy|` → east/west; else → north/south.
+ * If `from` and `to` are identical, returns 'S' (arbitrary stable default).
+ *
+ * Y-axis convention: `+y` is south (matches the iso grid origin at top-left of
+ * the diamond). `-y` is north.
+ */
+export function facingToward(from: Position, to: Position): Facing {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  if (dx === 0 && dy === 0) return 'S'
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx > 0 ? 'E' : 'W'
+  }
+  return dy > 0 ? 'S' : 'N'
 }

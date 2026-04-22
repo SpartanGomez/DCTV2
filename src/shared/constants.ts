@@ -24,7 +24,7 @@ export const RATE_LIMIT_ACTIONS_PER_SEC = 10 as const
 // --- Traps ---
 export const MAX_TRAPS_PER_HERETIC = 2 as const
 
-// --- Class stats (SPEC §13) ---
+// --- Class stats (SPEC v2 §7.2) ---
 export const CLASS_STATS: Record<
   ClassId,
   {
@@ -33,11 +33,17 @@ export const CLASS_STATS: Record<
     attackRange: number
     sightRange: number
     requiresLoS: boolean
+    /**
+     * SPEC v2 §6.3 — max |Δh| a unit can traverse in one movement step.
+     * `|Δh| ≤ 1` moves free for everyone; `|Δh| > 1` requires `jump ≥ |Δh|`.
+     * Knight is heavy plate (2); Mage floats (3); Heretic is predatory (3).
+     */
+    jump: number
   }
 > = {
-  knight: { hp: 24, baseAttackDamage: 5, attackRange: 1, sightRange: 2, requiresLoS: false },
-  mage: { hp: 16, baseAttackDamage: 3, attackRange: 3, sightRange: 3, requiresLoS: true },
-  heretic: { hp: 20, baseAttackDamage: 4, attackRange: 2, sightRange: 2, requiresLoS: false },
+  knight: { hp: 24, baseAttackDamage: 5, attackRange: 1, sightRange: 2, requiresLoS: false, jump: 2 },
+  mage: { hp: 16, baseAttackDamage: 3, attackRange: 3, sightRange: 3, requiresLoS: true, jump: 3 },
+  heretic: { hp: 20, baseAttackDamage: 4, attackRange: 2, sightRange: 2, requiresLoS: false, jump: 3 },
 }
 
 // --- Action costs (SPEC §8.3) ---
@@ -61,11 +67,17 @@ export const ASH_CLOUD_DOT = 1 as const
 export const CORRUPTED_ENEMY_DOT = 2 as const
 export const CORRUPTED_HERETIC_HEAL = 1 as const
 
-// --- Render (SPEC §21.4) ---
+// --- Render (SPEC v2 §9.3, §14.3) ---
 export const TILE_WIDTH = 64 as const
 export const TILE_HEIGHT = 32 as const
-export const TILE_DEPTH = 28 as const
+/** Side-face pixel height per unit of `Tile.height` (SPEC v2 §14.3). */
+export const TILE_DEPTH_PX = 28 as const
 export const SPRITE_CANVAS = 64 as const
+
+/** SPEC v2 §6.3 — default height for tiles that don't specify one. */
+export const DEFAULT_TILE_HEIGHT = 1 as const
+/** SPEC v2 §6.5 — camera rotation tween duration. 90° Q/E step. */
+export const CAMERA_ROTATION_MS = 150 as const
 
 // --- Abilities (SPEC §13) ---
 export const CLASS_ABILITIES: Record<ClassId, readonly [AbilityId, AbilityId, AbilityId]> = {

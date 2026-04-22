@@ -98,7 +98,7 @@ describe('validateAttack', () => {
       grid: {
         ...state.grid,
         tiles: state.grid.tiles.map((row, y) =>
-          row.map((tile, x) => (x === 6 && y === 3 ? { type: 'shadow' as const } : tile)),
+          row.map((tile, x) => (x === 6 && y === 3 ? { type: 'shadow' as const, height: 1 } : tile)),
         ),
       },
     }
@@ -165,7 +165,7 @@ describe('applyAttack', () => {
       grid: {
         ...state.grid,
         tiles: state.grid.tiles.map((row, y) =>
-          row.map((tile, x) => (x === 6 && y === 3 ? { type: 'rubble' as const } : tile)),
+          row.map((tile, x) => (x === 6 && y === 3 ? { type: 'rubble' as const, height: 1 } : tile)),
         ),
       },
     }

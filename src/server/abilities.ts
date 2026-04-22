@@ -733,9 +733,13 @@ function applyDesecrate(
         // Re-corrupting refreshes TTL but keeps baseType.
         return { ...tile, ttl: DESECRATE_TTL }
       }
+      // SPEC v2 §6.3 — Desecrate replaces the material (type), not the topology
+      // (height). The stack height of the column is preserved across corruption
+      // and reverts back to `baseType` on expiry.
       return {
         type: 'corrupted' as const,
         baseType: tile.type,
+        height: tile.height,
         ttl: DESECRATE_TTL,
       }
     }),
