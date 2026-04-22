@@ -203,7 +203,14 @@ async function main(): Promise<void> {
     net.send({ type: 'action', action: { kind: 'usePickup', unitId: unit.id } })
   }
   window.addEventListener('keydown', (ev) => {
-    if (ev.key === 'e' || ev.key === 'E') sendEndTurn()
+    // SPEC v2 §9.3 keybindings.
+    if (ev.key === ' ') {
+      ev.preventDefault()
+      sendEndTurn()
+    }
+    // Q/E rotate the camera (client-only — server has no idea).
+    if (ev.key === 'q' || ev.key === 'Q') activeScene?.rotateCameraCcw()
+    if (ev.key === 'e' || ev.key === 'E') activeScene?.rotateCameraCw()
     if (ev.key === 'd' || ev.key === 'D') sendDefend()
     if (ev.key === 'u' || ev.key === 'U') sendUsePickup()
     if (ev.key === 's' || ev.key === 'S') {
