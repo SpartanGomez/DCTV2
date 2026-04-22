@@ -32,6 +32,11 @@ declare global {
       kneel: () => void
       attackNearest: () => void
       ability: (index: 0 | 1 | 2, target?: { x: number; y: number }) => void
+      // M7.5 (v2): rotatable camera. Client-only state; server has no idea.
+      rotateCamera: (dir: 'ccw' | 'cw') => void
+      getCameraRotation: () => 0 | 1 | 2 | 3
+      getTileHeight: (x: number, y: number) => number
+      getOwnFacing: () => 'N' | 'E' | 'S' | 'W' | null
     }
   }
 }
@@ -279,6 +284,16 @@ async function main(): Promise<void> {
       ability: (index, target) => {
         sendAbility(index, target)
       },
+      rotateCamera: (dir) => {
+        if (dir === 'ccw') activeScene?.rotateCameraCcw()
+        else activeScene?.rotateCameraCw()
+      },
+      getCameraRotation: () => activeScene?.rotation ?? 0,
+      getTileHeight: (x, y) => {
+        const state = activeScene?.currentState
+        return state?.grid.tiles[y]?.[x]?.height ?? 1
+      },
+      getOwnFacing: () => activeScene?.getOwnUnit()?.facing ?? null,
     }
   }
 

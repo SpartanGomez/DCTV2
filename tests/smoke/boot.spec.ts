@@ -277,3 +277,151 @@ test('class-selection lobby: mage vs heretic pair + match starts', async ({ brow
     await ctxB.close()
   }
 })
+
+// ============================================================
+// M7.5 — rotatable camera, multi-height terrain, jump-gating
+// SPEC v2 §6.3 / §6.5 / §6.6 / §12 (M7.5 smoke definition).
+//
+// The pit arena (used by smoke) places its `high_ground` perimeter at height 4.
+// Knight (jump 2) cannot scale it from interior height 1 (Δh = 3); Mage
+// (jump 3) can. Camera rotation is client-only — server has no idea, so the
+// rotation count appears nowhere in MatchState payloads.
+// ============================================================
+
+test('M7.5 — Knight is rejected with height_exceeds_jump on the height-4 perimeter', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    const [infoA] = await Promise.all([msA, msB])
+
+    // Whichever tab is active first tries the gate.
+    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
+
+    // Confirm the perimeter is height 4 (server-authoritative tile shape).
+    const perimeterH = await active.evaluate(() => window.__dct?.getTileHeight(0, 0))
+    expect(perimeterH).toBe(4)
+    // Confirm interior is height 1.
+    const interiorH = await active.evaluate(() => window.__dct?.getTileHeight(3, 4))
+    expect(interiorH).toBe(1)
+
+    // Knight is at (1,4) by default; (0,4) is perimeter at height 4. Δh = 3.
+    // Knight jump = 2; expect rejection with height_exceeds_jump.
+    const rejected = active.waitForEvent('console', {
+      predicate: (m) => m.text().includes('actionResult: rejected (height_exceeds_jump)'),
+      timeout: 5_000,
+    })
+    await active.evaluate(() => {
+      window.__dct?.move(0, 4)
+    })
+    await rejected
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — Mage (jump 3) can scale the same height-4 perimeter Knight cannot', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'mage')
+    await enterLobbyAndReady(pageB, 'mage')
+    const [infoA] = await Promise.all([msA, msB])
+    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
+
+    // Mage at (1,4); (0,4) perimeter at height 4. Δh = 3, jump = 3 → ok.
+    await waitForOk(active, () =>
+      active.evaluate(() => {
+        window.__dct?.move(0, 4)
+      }),
+    )
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — camera rotation is client-only and updates via Q/E (or __dct hook)', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    await Promise.all([msA, msB])
+
+    // Default rotation is 0.
+    expect(await pageA.evaluate(() => window.__dct?.getCameraRotation())).toBe(0)
+
+    // Rotate clockwise (E equivalent) — should land on rotation 1 (90°).
+    const rotatedCw = pageA.waitForEvent('console', {
+      predicate: (m) => m.text().includes('camera rotation -> 90°'),
+      timeout: 3_000,
+    })
+    await pageA.evaluate(() => {
+      window.__dct?.rotateCamera('cw')
+    })
+    await rotatedCw
+    expect(await pageA.evaluate(() => window.__dct?.getCameraRotation())).toBe(1)
+
+    // Rotate counter-clockwise (Q equivalent) — back to 0.
+    const rotatedCcw = pageA.waitForEvent('console', {
+      predicate: (m) => m.text().includes('camera rotation -> 0°'),
+      timeout: 3_000,
+    })
+    await pageA.evaluate(() => {
+      window.__dct?.rotateCamera('ccw')
+    })
+    await rotatedCcw
+
+    // The OTHER client's view never sees pageA's rotation — server is rotation-
+    // agnostic. pageB stays at rotation 0 throughout.
+    expect(await pageB.evaluate(() => window.__dct?.getCameraRotation())).toBe(0)
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — unit facing initial spawn faces the opposing spawn', async ({ browser }) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    await Promise.all([msA, msB])
+
+    // SPEC v2 §6.6 — A spawn (1,4) faces enemy spawn (6,3) → 'E'.
+    // B spawn (6,3) faces enemy spawn (1,4) → 'W'.
+    const facingA = await pageA.evaluate(() => window.__dct?.getOwnFacing())
+    const facingB = await pageB.evaluate(() => window.__dct?.getOwnFacing())
+    expect(facingA).toBe('E')
+    expect(facingB).toBe('W')
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
