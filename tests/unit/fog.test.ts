@@ -78,7 +78,7 @@ describe('computeVisibleTiles', () => {
       grid: {
         ...state.grid,
         tiles: state.grid.tiles.map((row, y) =>
-          row.map((tile, x) => (x === 1 && y === 1 ? { type: 'wall' as const } : tile)),
+          row.map((tile, x) => (x === 1 && y === 1 ? { type: 'wall' as const, height: 1 } : tile)),
         ),
       },
     }

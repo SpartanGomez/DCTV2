@@ -371,7 +371,7 @@ describe('turn-start tick (applyEndTurn)', () => {
         tiles: state.grid.tiles.map((row, y) =>
           row.map((tile, x) =>
             x === 6 && y === 3
-              ? { type: 'corrupted' as const, baseType: 'stone' as const, ttl: 3 }
+              ? { type: 'corrupted' as const, baseType: 'stone' as const, height: 1, ttl: 3 }
               : tile,
           ),
         ),
@@ -392,7 +392,7 @@ describe('turn-start tick (applyEndTurn)', () => {
         tiles: state.grid.tiles.map((row, y) =>
           row.map((tile, x) =>
             x === 2 && y === 2
-              ? { type: 'corrupted' as const, baseType: 'stone' as const, ttl: 1 }
+              ? { type: 'corrupted' as const, baseType: 'stone' as const, height: 1, ttl: 1 }
               : tile,
           ),
         ),

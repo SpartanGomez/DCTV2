@@ -39,6 +39,17 @@ export type PerkId =
 
 export type ClassId = 'knight' | 'mage' | 'heretic'
 
+/**
+ * SPEC v2 §6.6 — unit facing in world space. Server-authoritative. Updated on
+ * move (toward final step), attack/ability (toward target), and spawn (toward
+ * the enemy's spawn).
+ *
+ * The renderer picks a sprite based on `facing` rotated by the client's current
+ * camera rotation (client-only state). Never mirror sprites at runtime — the
+ * four camera-relative orientations (SE/SW/NE/NW) are painted separately.
+ */
+export type Facing = 'N' | 'E' | 'S' | 'W'
+
 /** SPEC §13 — every ability each class can cast. */
 export type AbilityId =
   | 'shield_wall'
@@ -65,6 +76,13 @@ export type TerrainType =
 
 export interface TerrainTile {
   type: TerrainType
+  /**
+   * SPEC v2 §6.3 — stack height. Integer ≥ 0. Default 1. 0 = pit (below default
+   * floor). Terrain *material* (`type`) and terrain *topology* (`height`) are
+   * orthogonal — a height-3 stone stack and a height-3 corrupted stack are both
+   * height-3 but behave differently when you stand on them.
+   */
+  height: number
   /** Only present for Corrupted / dynamic overlays — turns remaining. */
   ttl?: number
   /** Underlying type for reverting dynamic effects. */
@@ -97,6 +115,11 @@ export interface Unit {
   ownerId: PlayerId
   classId: ClassId
   pos: Position
+  /**
+   * SPEC v2 §6.6 — world-space facing. Updated on move (toward final step),
+   * attack/ability (toward target), and spawn (toward the enemy's spawn).
+   */
+  facing: Facing
   hp: number
   maxHp: number
   statuses: Status[]
@@ -153,6 +176,13 @@ export interface ArenaDef {
   name: string
   /** 8×8 grid, indexed [y][x]. */
   tiles: TerrainType[][]
+  /**
+   * SPEC v2 §6.3 — optional per-tile height override, indexed [y][x]. Tiles
+   * default to `DEFAULT_TILE_HEIGHT` (1) when this table is absent or the cell
+   * is unset. Existing flat arenas omit this field; new height-bearing arenas
+   * include it.
+   */
+  heights?: number[][]
   /** Mirrored spawn positions per match. */
   spawns: [Position, Position]
   /** Fixed candidate slots; which pickup lands where is rolled at match start. */
@@ -222,6 +252,8 @@ export type ServerErrorCode =
   | 'invalid_path'
   | 'tile_impassable'
   | 'tile_occupied'
+  /** SPEC v2 §6.3 — |Δh| exceeds walker's `jump` stat. */
+  | 'height_exceeds_jump'
   | 'duplicate_trap'
   | 'self_kill_prevented'
   | 'unit_dead'
