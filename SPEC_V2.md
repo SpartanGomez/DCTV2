@@ -1092,5 +1092,400 @@ Don't step on these. They've all been stepped on at least once during v1.x.
 
 ---
 
-*SPEC v2.0 Parts I–III — draft 2026-04-21. Parts IV (art + audio) and V (glossary + decision log) forthcoming. `SPEC.md` v1.4 remains authoritative until v2.0 is complete and the swap PR lands.*
+---
+
+# Part IV — How It Looks and Sounds
+
+Part IV enumerates every visual and auditory asset the game ships, and the rules that govern how it's made and used. This part does *not* specify pixels — `ART_SPEC.md` is the pixel bible. When Part IV and ART_SPEC disagree, Part IV (this doc) is engineering-authoritative; ART_SPEC gets patched.
+
+ART_SPEC v1.3 remains the current pixel brief. ART_SPEC v2 follows the designer pilot return — once we've confirmed FFT-quality is achievable at 4-facing scale, we rewrite ART_SPEC to reflect the v2 sprite-orientation conventions and the multi-height tile grammar. Part IV is written to be compatible with either version.
+
+---
+
+## 14. Art Direction — Terrain
+
+### 14.1 Aesthetic Target
+
+Final Fantasy Tactics (PS1, 1997) combat scenes with Diablo I's palette pushed darker. Hand-painted pixel detail per tile, not flat color fills. Visible materials, not symbols. Every tile reads at a glance as its terrain type even at 1× zoom on a cluttered grid.
+
+Anti-targets (do NOT look like these): Stardew Valley, Hyper Light Drifter, NES 8-bit, modern flat-vector pixel art, default Aseprite presets. The tone is gothic, oppressive, mortuary — not cheerful, not cute.
+
+### 14.2 Palette (canonical)
+
+| Role | Primary | Shadow | Highlight |
+|------|---------|--------|-----------|
+| Stone / metal | `#5a5a68` | `#3a3a48` | `#7a7a8a` |
+| Cold highlight | `#aaaacc` | — | `#ccccdd` (never pure white) |
+| Earth | `#3a2a1a` | `#2a1a0a` | `#5a4a3a` |
+| Blood / ember | `#8b0000` | `#5a0000` | `#cc2222` |
+| Fire accent | `#ff6600` | `#cc4400` | `#ffaa44` |
+| Magic (violet) | `#6633aa` | `#4a2288` | `#8866ff` |
+| Pale arcane (blue) | `#88aaff` | `#5577cc` | `#aaccff` |
+| Arcane cloth | `#2a2a5a` | `#1a1a38` | `#4466cc` |
+| Gold trim | `#bba040` | `#886a20` | `#ddc060` |
+| Background | `#0a0a15` | `#0e1020` | — |
+
+**Hard rules (enforced at QA).**
+
+- Never pure white `#ffffff`. Brightest white is `#ccccdd` (cold highlight).
+- Never fully-saturated RGB primaries (`#ff0000`, `#00ff00`, `#0000ff`).
+- 16–24 distinct colors per sprite.
+- 1 px dark outline (`#1a1a20` or darker) on every character, prop, and VFX motif.
+- No anti-aliasing on outlines or edges. Partial-alpha edge pixels are export bugs.
+- No dithering. We are not using dither as a stylistic choice.
+- Light comes from **upper-left** in every sprite and tile. Consistent across everything. NE / NW unit sprites (back-facing) still have their highlights on the upper-left of screen space, which is the character's *back* in those views — this is correct.
+
+### 14.3 Tile Canvas (v2)
+
+Each base tile authored at:
+
+- **Top face:** 64 × 32 diamond. The walkable surface.
+- **Side face (one stack unit):** 64 × 28 diamond band beneath the top.
+- **Export canvas:** 64 × 60 PNG with transparency. Diamond top painted in upper 32 px, side face in lower 28 px.
+
+For stacked tiles (`Tile.height > 1`), the **renderer repeats the side face** `(height − 1)` additional times beneath the authored tile. The artist ships ONE PNG per terrain type; the renderer stacks. Side-face hash-seeded detail placement per stack layer keeps adjacent stacks from looking like a single extruded block.
+
+### 14.4 Camera-Rotation Hash-Seeding (v2)
+
+One PNG per terrain type; the renderer applies the iso-rotation transform. Per-tile cosmetic detail (moss tufts, crack direction, ember dots, acid bubbles, swirl centers) is **hash-seeded on `(x, y, cameraRotation)`** — not just `(x, y)` — so that at any rotation the detail distribution reads naturally and adjacent tiles don't duplicate. A `pixelArt.ts` utility in `src/client/` owns this hash; don't re-invent it per renderer.
+
+### 14.5 Terrain Catalog (one line per type — full pixel anatomy in ART_SPEC §6)
+
+- **Stone (default):** warm gray-brown `#4a4550` base, masonry seam lines forming brick-bond, occasional moss or crack on ~25 % of tiles.
+- **High Ground:** sandy-earth top face with horizontal grain, small grass tufts along diamond edges, 1 px bright upper-left edge highlighting the raised lip.
+- **Rubble:** 3–5 irregular stone chunks scattered, each with upper-left highlight + lower-right shadow, darker and more chaotic than Stone.
+- **Hazard — Fire:** charred `#2a1a14` base, 5–8 ember dots, 2–3 tiny upright flame triangles.
+- **Hazard — Acid:** dark bile-green `#1a2a1a` base, 3–4 bubbling circles with wet-shine specular dot on each bubble.
+- **Hazard — Void:** deep purple-black base, 2–3 curved `#4a2288` swirl lines radiating from center.
+- **Pillar:** stone column centered on diamond, rising from top face, obviously a wall (not a step-up).
+- **Wall:** full-tile-width dark stone block with horizontal mortar banding every 6 px.
+- **Shadow Tile:** very dark `#0e0e1e` base, 2–3 curved wispy purple lines, one hash-placed `#ccccdd` shimmer dot.
+- **Corrupted:** dark red-black `#3a1a1a` base, 3–4 branching `#8b0000` vein lines ending in a `#cc2222` highlight pulse.
+
+### 14.6 Rendering Constraints
+
+- `PIXI.SCALE_MODES.NEAREST` globally.
+- `image-rendering: pixelated` CSS on the canvas element.
+- All sprite positions rounded to integer pixels at render (sub-pixel positions blow up as anti-aliased fuzz).
+- No PixiJS filters that smooth (blur, noise, bevel). ColorMatrixFilter for desaturation and tint is fine — it's per-pixel, not interpolating.
+- **Tile rotation is implemented via the scene-graph-root transform, NOT per-tile sprite rotation.** Per-tile rotation would force texture resampling and break NEAREST.
+
+### 14.7 Reference
+
+Full pixel anatomy per tile, palette bins with exact positioning rules, and QA checklists live in `ART_SPEC.md` (currently v1.3, §6). ART_SPEC v2 will extend each tile entry with its stack-side and per-rotation detail rules.
+
+---
+
+## 15. Art Direction — Champions
+
+### 15.1 Silhouette Identity
+
+Every champion must be instantly identifiable from a 32-pixel-tall solid-black silhouette. If you squint and can't name the class, the silhouette fails.
+
+- **Ashen Knight** — squat and wide (pauldrons), crimson plume spiking up from a great helm, greatsword held high, kite shield on the left arm. Metal-heavy. Reads: immovable wall.
+- **Pale Mage** — tall, narrow, pointed hood apex, glowing orb on a staff floating above head-level, floor-length robe with tattered hem. Cloth-heavy. Reads: cloaked sorcerer.
+- **Heretic** — hunched and asymmetric, two curved horns out and up from skull, bone-gauntlet claws, no weapon silhouette (hands are the weapon), ragged waist strips. Flesh-and-bone. Reads: predator.
+
+### 15.2 Canvas & Anchor
+
+- **Canvas:** 64 × 64 PNG, transparent background.
+- **Body footprint:** roughly central 24–28 px wide × 40 px tall. Weapons, hoods, plumes, staves extend outside that box into the full 64 × 64.
+- **Anchor:** center-bottom, `(0.5, 1.0)`. Feet touch y-rows 60–62 on every frame across every animation and every facing. Depth-sort breaks if feet drift.
+- **Ground shadow:** 20 × 6 px ellipse at `alpha 0.3`, `#0a0a15`, baked into the sprite (renderer does not add it).
+
+### 15.3 Four-Facing Rules (v2)
+
+**This is the defining v2 change.** FFT uses four hand-painted sprite orientations per pose, not two-facings-mirrored. The Knight's shield lives on the left arm in world space, and mirroring puts it on the wrong arm.
+
+Four camera-relative sprite orientations ship per animation:
+
+| Suffix | Character orientation on screen | World meaning (at camera rotation 0°) |
+|--------|---------------------------------|--------------------------------------|
+| `_se` | 3/4 front, facing screen-down-right | Unit facing E or S in world |
+| `_sw` | 3/4 front, facing screen-down-left | Unit facing W or S in world |
+| `_ne` | 3/4 back, facing screen-up-right | Unit facing E or N in world |
+| `_nw` | 3/4 back, facing screen-up-left | Unit facing W or N in world |
+
+The renderer chooses among the four based on `unit.facing` rotated by current `cameraRotation`. No mirroring at runtime. No tween between facings — facing changes snap on the frame immediately before the action animation plays.
+
+**Cross-facing consistency:**
+
+- The Knight's shield stays on the LEFT arm in world space (camera-near side in SW/NE, camera-far side in SE/NW).
+- The sword stays in the RIGHT hand.
+- Crimson plume is visible from all four angles.
+- Light comes from upper-left in screen space regardless of facing — highlights land on the character's back in NE / NW.
+- Cape / tabard visible from behind (NE / NW fully, peeking in SE / SW).
+- In NE / NW (back views) where the visor/face isn't visible, paint helm seams and rivet patterns so the helm reads as a helm, not a smooth egg.
+
+### 15.4 Animation Sheet Catalog
+
+Horizontal-strip PNG files, one per animation, one per facing. Each frame 64 × 64. Frame 0 leftmost, read left-to-right. Transparent background, tightly packed (no frame gaps).
+
+File naming: `{champ}_{animation}_{facing}.png` where `{champ}` ∈ `{knight, mage, heretic}`, `{facing}` ∈ `{se, sw, ne, nw}`.
+
+| Sheet | Frames | Type | Notes |
+|-------|--------|------|-------|
+| `{champ}_idle_{facing}.png` | 4 | Loop | Subtle breathing. 1 px chest rise/fall. |
+| `{champ}_walk_{facing}.png` | 6 | Loop | Class-weighted march. Knight heavy, Mage gliding, Heretic stalking. |
+| `{champ}_attack_{facing}.png` | 5 | One-shot | Hit resolves on frame index 3. Ends on 4, returns to idle. |
+| `{champ}_hit_{facing}.png` | 3 | One-shot | Recoil + recover. White tint applied by ColorMatrixFilter at runtime — DO NOT paint a white flash. |
+| `{champ}_death_{facing}.png` | 4 | One-shot | Collapse. Holds on frame index 3. Desaturation by ColorMatrixFilter — DO NOT repaint in gray. |
+| `{champ}_defend_{facing}.png` | 2 | Held | Frame 0 raise, frame 1 braced. Parks on frame 1 for duration. |
+| `{champ}_cast_{facing}.png` (Mage) or `{champ}_channel_{facing}.png` (Heretic) | 4 | One-shot | Ability activation. Knight does NOT ship this — ability telegraphs reuse `attack`. |
+| `{champ}_kneel_{facing}.png` | 4 | One-shot | Surrender. Weapon drops at the side on frame 2. Holds on frame 3 for the 3-second Coward's Brand. |
+
+**Total sheet count at full 4-facing:**
+
+- Knight: 7 animations × 4 facings = **28 sheets**.
+- Mage: 8 animations × 4 facings = **32 sheets**.
+- Heretic: 8 animations × 4 facings = **32 sheets**.
+- **Grand total: 92 champion sprite sheets.**
+
+### 15.5 Frame Timings (baked into engine, not into sprite)
+
+Useful for timing wind-ups and follow-throughs in the sprite. Engine plays at:
+
+- Idle: 200 ms / frame
+- Walk: 120 ms / frame
+- Attack: 80 ms / frame (fast snap)
+- Hit: 60 ms / frame
+- Death: 150 ms / frame; hold last
+- Defend: 100 ms transition; hold frame 1 indefinitely
+- Cast / Channel: 120 ms / frame
+- Kneel: 180 ms / frame; hold frame 3 for 3 s
+
+### 15.6 Reference
+
+Full anatomy per champion (part-by-part pixel specification, palette bins, silhouette sanity check) lives in `ART_SPEC.md` §5 + §7. ART_SPEC v2 will add per-facing anatomy notes for SW / NE / NW (the reinterpretations of §5's SE-default anatomy).
+
+---
+
+## 16. Art Direction — VFX, HUD, Portraits, Icons, Logo
+
+Everything visual that isn't terrain or champions. One line per item; anatomy in ART_SPEC.
+
+### 16.1 Ability VFX Sprites
+
+Transparent PNG, center anchor unless noted. File name: `vfx_<effect>.png`.
+
+| File | Canvas | Frames | Use |
+|------|--------|--------|-----|
+| `vfx_slash_arc.png` | 64 × 32 | 3 | Knight basic attack + Vanguard Charge hit |
+| `vfx_shield_wall.png` | 64 × 64 | 1 (bottom-center anchor) | Held in front of Knight while Shield Wall active |
+| `vfx_charge_dust.png` | 32 × 32 | 4 (bottom-center anchor) | Behind Knight during Vanguard Charge |
+| `vfx_cinder_bolt.png` | 32 × 32 | 4 | Mage Cinder Bolt projectile |
+| `vfx_ash_cloud.png` | 96 × 96 | 1 (engine-rotated + pulsed) | Ash Cloud overlay |
+| `vfx_blink_flash.png` | 48 × 48 | 2 | F0 implosion at origin, F1 explosion at destination |
+| `vfx_blood_orb.png` | 16 × 16 | 3 | Blood Tithe sacrifice droplet |
+| `vfx_hex_rune.png` | 48 × 48 | 1 | Trap rune on placement (engine-fades, then hidden) |
+| `vfx_hex_explode.png` | 64 × 64 | 3 | Trap trigger burst |
+| `vfx_desecrate.png` | 96 × 96 | 1 (engine-pulsed) | Corruption vein overlay on 2×2 |
+| `vfx_iron_stance.png` | 48 × 48 | 1 (bottom-center anchor) | Golden aura at Knight's feet while active |
+| `vfx_hit_sparks.png` | 32 × 32 | 3 | Impact sparks after every attack |
+
+**12 VFX files total.** Engine handles alpha fading, rotation, pulsing, scaling — deliver full-opacity static frames, no pre-baked fades.
+
+### 16.2 Battlefield Pickups
+
+32 × 32 PNG each. No animation (engine pulses alpha/scale at render).
+
+- `pickup_health_flask.png` — ornate glass vial, blood-red liquid, metal-banded neck.
+- `pickup_energy_crystal.png` — sharp-cut Magic-violet gem, faintly self-lit.
+- `pickup_scroll_of_sight.png` — rolled parchment, gold cord, eye sigil.
+- `pickup_chest.png` — dark iron-banded wooden chest with skull-motif lock.
+
+**4 pickup files total.**
+
+### 16.3 Perk Icons
+
+32 × 32 PNG each, dark-framed (paint a subtle dark circle/banner behind the motif — icons are not floating on transparent). One focal motif per icon. No text in the icon; pixel-font text is rendered separately at runtime.
+
+All 16 perks per §8.2: Bloodlust, Second Wind, Scout's Eye, Energy Surge, Thick Skin, Ghost Step, Trap Sense, Ash Walker, First Strike, Last Stand, Mist Cloak, Fortify, Long Reach, Pillager, Counterspell, Vampiric Touch.
+
+**16 perk-icon files total.**
+
+### 16.4 Ability Slot Icons
+
+32 × 32 PNG each, shown in the match HUD action bar. Motif grammar per class: Knight = geometric/heraldic, Mage = astral/arcane, Heretic = organic/gore.
+
+- Knight: `ability_knight_shield_wall.png`, `ability_knight_vanguard_charge.png`, `ability_knight_iron_stance.png`.
+- Mage: `ability_mage_cinder_bolt.png`, `ability_mage_ash_cloud.png`, `ability_mage_blink.png`.
+- Heretic: `ability_heretic_blood_tithe.png`, `ability_heretic_hex_trap.png`, `ability_heretic_desecrate.png`.
+
+**9 ability-icon files total.**
+
+### 16.5 Portraits
+
+80 × 80 PNG head-and-shoulders composition at higher detail than the 64 × 64 sprites. Class-specific dimmed radial background. 2 px gothic-gold pointed-arch frame baked into the PNG edge — HUD does not re-frame.
+
+Per champion, three variants:
+
+- `portrait_{champ}.png` — base.
+- `portrait_{champ}_dim.png` — desaturated + 30 % darker, for eliminated-player bracket slots.
+- `portrait_{champ}_cracked.png` — shattered-glass overlay for the Coward's Brand (§8.5).
+
+**9 portrait files total** (3 champs × 3 variants).
+
+### 16.6 HUD Widgets
+
+Transparent PNG, composited by PixiJS. Positions placed by code.
+
+- `hud_energy_pip_filled.png` (12 × 12), `hud_energy_pip_empty.png` (12 × 12) — up to 6 in a row.
+- `hud_turn_banner.png` (128 × 32) "YOUR TURN" gold-ink gothic; `hud_enemy_turn_banner.png` dimmer variant.
+- `hud_timer_frame.png` (48 × 16) stone-inset bracket; countdown digits rendered with pixel-font at runtime.
+- `cursor_select.png`, `cursor_attack.png`, `cursor_move.png`, `cursor_ability.png` (64 × 32 diamond overlays) — gold / red / cold-blue / violet respectively.
+- Status icons (16 × 16 each): `status_defending.png`, `status_shield_wall.png`, `status_iron_stance.png`, `status_revealed.png`, `status_stunned.png`.
+
+**~13 HUD files total.**
+
+### 16.7 Title Logo
+
+`logo_dark_council_tactic.png` — 512 × 128, "DARK COUNCIL TACTIC" in gothic pixel blackletter. Gold ink `#bba040`, 1 px `#1a1a20` outline, 1 px `#0a0a15` drop shadow. Distressed letterforms — looks forged, not typed.
+
+**1 logo file.**
+
+### 16.8 Pixel Font
+
+Single pixel-art gothic font (e.g. "m5x7", "Pixeled", or similar public-domain) embedded at runtime. Engineering picks and embeds. Sprite artist does NOT deliver a font.
+
+### 16.9 Asset Totals (visual)
+
+Rough count of what ships at v2.0 submission, pre-audio:
+
+- Champion sprite sheets: **92**
+- Terrain tiles: **10** (renderer stacks for height)
+- Ability VFX: **12**
+- Pickups: **4**
+- Perk icons: **16**
+- Ability slot icons: **9**
+- Portraits: **9**
+- HUD widgets: **13**
+- Title logo: **1**
+
+**~166 PNG files total.** Refer to ART_SPEC v2 §14.9 batch delivery (forthcoming) for sequencing.
+
+---
+
+## 17. Audio Direction
+
+Silence is scarier than noise. The soundtrack is minimal and oppressive; the SFX is sharp and physical.
+
+### 17.1 Philosophy
+
+Ambient: low wind, distant thunder, crackling embers. Oppressive, never busy.
+
+Combat SFX: metallic clash (Knight), arcane whoosh (Mage), wet corruption squelch (Heretic). Sharp attack envelopes — snappy, tactical, not cinematic.
+
+UI SFX: stone-on-stone click for menu interactions. Deep bell toll for turn start and surrender.
+
+Music: slow droning cello or choir hum during matches. Long holds. Silence is the default — music fills the air only when the tension calls for it.
+
+### 17.2 Music Tracks (jam minimum: 6)
+
+1. **Main menu / lobby.** Slow brooding ambient, low strings, distant choir. ~2 min loop.
+2. **Combat — early turns.** Tense, minimal, sparse percussion, droning cello. ~90 BPM. Loop.
+3. **Combat — late / low HP.** Intensifies: faster tempo, more percussion, dissonant strings. Triggered when either player drops below 30 % HP. Loop.
+4. **Perk draft / bracket.** Brief atmospheric sting, 10–15 s.
+5. **Victory.** Dark triumphant brass swell, 5–10 s.
+6. **Defeat / surrender.** Mournful. Single low bell, fading strings, 5–8 s.
+
+### 17.3 SFX Catalog (jam minimum)
+
+- Sword clash (Knight attacks)
+- Arcane whoosh + fire crackle (Mage abilities)
+- Wet corruption squelch (Heretic abilities)
+- Stone footsteps (unit movement)
+- UI click (stone-on-stone)
+- Bell toll (turn start, surrender)
+- Fog reveal whisper (Scout action)
+- Trap trigger snap (Hex Trap)
+- Chest open creak (pickup)
+- Crowd murmur (ambient tournament, louder in finals)
+
+### 17.4 Tooling
+
+Music: Beatoven.ai primary (game-dev loop-aware). Backup: aimusic.so for pre-made dark-fantasy placeholders.
+
+SFX: SoundsGen and Freesound.org under permissive licenses.
+
+### 17.5 Audio Delivery
+
+- Music: `.ogg`, 44.1 kHz, stereo. Naming: `music_<purpose>.ogg` (e.g. `music_combat.ogg`, `music_victory.ogg`).
+- SFX: `.ogg`, 44.1 kHz, mono. Naming: `sfx_<action>.ogg` (e.g. `sfx_sword_clash.ogg`, `sfx_bell_toll.ogg`).
+- All audio files live in `public/audio/` only.
+
+### 17.6 Audio Surface
+
+`src/client/audio/SoundManager.ts` is the ONLY thing that plays audio. No `new Audio()` calls, no `<audio>` tags, no PixiJS sound plugin direct calls elsewhere in the client. If a scene needs a new cue, it asks `SoundManager`.
+
+---
+
+## 18. Production Pipeline
+
+### 18.1 Asset Creation Workflow
+
+**Champion sprites.** Designer agent (ChatGPT or similar) generates initial 1× PNG drafts following ART_SPEC. Fernando reviews at 1×, 3×, 4× zoom. If approved, Kai imports into `public/sprites/champions/`. If rejected, designer iterates on the existing PNG — do not start from scratch. Every sprite may receive a polish pass in Aseprite before shipping (hand-edit pixels, palette verification, clean-up).
+
+**Terrain tiles.** Drawn directly in Aseprite using the palette in §14.2. One 64 × 60 PNG per terrain type (the renderer stacks for height). The per-tile hash-seeded variation happens at runtime via `pixelArt.ts` — don't ship N variants per type.
+
+**VFX.** Designer agent for initial drafts, Aseprite for polish. No pre-baked fades or rotations — engine handles those.
+
+**HUD, portraits, icons, logo.** Aseprite direct. Portraits and the logo are Hero Moments (§2.2) — disproportionate time budget.
+
+**Music.** Beatoven.ai generates loops. `.ogg` export, 44.1 kHz, stereo. Short sanity-check pass for loop seam artifacts before committing.
+
+**SFX.** Freesound / SoundsGen search, crop to one-shot, normalize, `.ogg` export at 44.1 kHz mono.
+
+### 18.2 Batch Delivery (tied to milestones)
+
+Art arrives in batches gated by milestone. Each batch reviewed by Fernando as a set — partial batches don't ship.
+
+- **Batch 1 (M8):** All 10 terrain tile types. Nothing else.
+- **Batch 2 (M9):** All 92 champion sheets + all 12 VFX. This is the art-work mountain — spec'd carefully, iterated aggressively per §18.3.
+- **Batch 3 (M9 polish):** 5 status icons; damage-number styling confirmation.
+- **Batch 4 (M10):** 16 perk icons + 9 ability icons.
+- **Batch 5 (M11):** 4 pickup sprites.
+- **Batch 6 (M12):** 9 portrait files (3 base + 3 dim + 3 cracked).
+- **Batch 7 (M13):** HUD widgets (13 files) + title logo (1).
+
+Audio batches interleave with M13 scope (all music and SFX land before submission; no audio in M8–M12 visual work).
+
+### 18.3 Iteration Protocol
+
+1. Agent reads ART_SPEC end to end plus the subsection for the asset being produced.
+2. Agent produces **one asset** (or a tightly scoped batch, e.g. "Knight idle SE only") at 1× PNG. Agent runs ART_SPEC §15 QA checklist internally.
+3. Agent delivers the PNG plus a one-paragraph note: distinct color count, any palette additions beyond §14.2 (with justification), any spec ambiguities resolved by judgment call.
+4. Fernando reviews at 1×, 3×, 4×. Approves, rejects, or requests changes.
+5. If changes requested: agent iterates on the existing file, does NOT start from scratch. Preserve what worked.
+6. On approval: Kai commits to `public/sprites/` in the repo and marks done in the batch tracker (§18.2).
+
+**Do NOT produce speculative variants.** One careful, spec-compliant version at a time. Iteration quality beats volume.
+
+### 18.4 Handoff Chain
+
+Designer agent (ChatGPT) ↔ Fernando (art director, final approval) ↔ Kai (commits to repo, maintains ART_SPEC, raises engineering concerns if an asset won't render).
+
+Three-way conversation lives in chat, not in git. The git history records the outcome: commits to `public/sprites/`, updates to ART_SPEC. Scratchpad discussion stays out of the repo root (per §13.5 trap list).
+
+### 18.5 Hero Moments — Where Polish Earns The Game Its Wow
+
+Not all ~166 assets get the same attention. These are the five moments judges, streamers, and first-time players will screenshot. Spend disproportionate time on them.
+
+1. **Title screen / logo reveal.** First frame anyone sees. The logo must look forged, not typed.
+2. **Bracket view.** 8 portraits, some in `_dim` variant. The "who are the Dark Council" reveal.
+3. **Perk draft.** 3 cards side-by-side with 32 × 32 icons. The roguelite identity beat.
+4. **The Kneel / Coward's Brand.** The `kneel` animation's final held frame + `portrait_{champ}_cracked.png` overlay. The game's most emotionally loaded frame.
+5. **Match-end victory pose.** Winning champion's idle over the losing champion's held death frame on a desaturated grid.
+
+If something has to be "pretty good" instead of great, let it be a mid-match idle frame, not one of these five. Secondary hero moments (less screenshot-able): arena pillars silhouetted against sky, the Heretic's Desecrate sweep across tiles, the Mage's Blink implosion/explosion timing, the Knight's Vanguard Charge dust trail. Don't phone those in either.
+
+### 18.6 Forbidden Tools
+
+- **No 3D generators** (Meshy, Kaedim, etc.). DCT is 2D pixel art.
+- **No bulk-generate-many-variants workflows.** One asset at a time, reviewed, iterated. AI pixel-art speculation produces 200 colors across 20 sprites.
+- **No partial-alpha "pixel art"** — AI tools that output soft-edged high-res "pixel art" fail ART_SPEC QA at 4× zoom. Every pixel must be a single solid color.
+
+---
+
+*SPEC v2.0 Parts I–IV — draft 2026-04-22. Part V (glossary + decision log + appendix) forthcoming. `SPEC.md` v1.4 remains authoritative until v2.0 is complete and the swap PR lands.*
 — Kai
