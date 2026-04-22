@@ -1487,5 +1487,305 @@ If something has to be "pretty good" instead of great, let it be a mid-match idl
 
 ---
 
-*SPEC v2.0 Parts I–IV — draft 2026-04-22. Part V (glossary + decision log + appendix) forthcoming. `SPEC.md` v1.4 remains authoritative until v2.0 is complete and the swap PR lands.*
+---
+
+# Part V — Reference
+
+Appendices. Glossary, decision log, the Definition of Done checklist, unresolved questions, post-jam ideas, and the handoff prompt for the next AI collaborator.
+
+---
+
+## 19. Glossary
+
+Alphabetical. One-line definitions. Useful when an AI collaborator drops into the doc mid-section.
+
+- **Ashen.** Adjective describing DCT's palette and mood. Cold gray, blood red, gold trim, near-black backgrounds. Never warm, never saturated, never cute.
+- **Ash Cloud.** Temporary 2×2 overlay placed by Pale Mage's Ash Cloud ability. Blocks LoS, deals 1 DoT per turn to units standing on it. Not a terrain type; tracked separately.
+- **Backstab (reserved).** A potential future mechanic enabled by `Unit.facing` being tracked server-side in v2. Not currently used, but facing is recorded for later addition without a contract migration.
+- **Batch.** A milestone-gated delivery of visual assets. See §18.2.
+- **Blink.** Pale Mage ability. 2 energy teleport within Manhattan distance 2, ignores LoS blockers and height.
+- **Blood Tithe.** Heretic ability: trade 4 HP for +2 energy this turn. The defining Heretic mechanic.
+- **BracketScene.** Client scene showing the 8-player tournament bracket standings. Displayed between matches.
+- **Camera rotation.** Client-only render state; 0°/90°/180°/270°. NOT game state (server doesn't know or care).
+- **Cinder Bolt.** Pale Mage basic ranged ability. 2 energy, 5 damage, range 3, LoS required.
+- **Coin flip.** Determines which player takes the first turn of a match. Seeded per match for determinism.
+- **Corrupted.** Temporary terrain state placed by Heretic's Desecrate. 3-turn duration. Deals 2 DoT/turn to non-Heretic; heals Heretic 1/turn.
+- **Coward's Brand.** The visual shame-badge applied to a surrenderer's portrait for the rest of the tournament. See §8.5.
+- **Desecrate.** Heretic ability. 3 energy, corrupts a 2×2 area for 3 turns.
+- **DoT.** Damage over Time. Applied at turn start for standing on hazard tiles, Ash Cloud, or Corrupted tiles. Bypasses the 1-damage floor (unlike direct attacks).
+- **eventId.** Server-generated correlation ID for an action. Paired `actionResult.eventId` + `stateUpdate` so clients know when to animate.
+- **Facing.** Direction a unit is looking in world space: `"N" | "E" | "S" | "W"`. Server-authoritative. Added in v2.
+- **FFT.** Final Fantasy Tactics (PS1, 1997). The North Star reference game.
+- **Fog of war.** Server-authoritative visibility filter. Clients only receive state they should know.
+- **Forfeit.** Loss by timeout (reconnect grace expired) or spam (>50 rejected actions in 10s). Distinct from Kneel surrender.
+- **Ghost marker.** Faded ColorMatrixFilter render of the last known position of an enemy you saw and then lost vision of. No separate sprite asset; runtime filter on the existing sprite.
+- **Hazard.** Terrain type family (Fire / Acid / Void) that does 1 DoT/turn to any unit standing on it.
+- **Hero Moments.** The five frames that define the game's visual identity: title reveal, bracket view, perk draft, Kneel, match-end. See §2.2.
+- **Hex Trap.** Heretic ability. Invisible trap on a tile; 4 damage + `revealed` status to a stepping enemy. Max 2 per Heretic.
+- **High Ground.** Terrain type. Costs 2 energy to climb onto; grants +25 % damage when attacking downward.
+- **Iron Stance.** Knight toggle ability. Negates knockback; +1 energy per tile of own movement while active.
+- **Iso / isometric.** The projection. 64 × 32 diamond tiles, units anchored center-bottom, depth-sorted by grid coordinates.
+- **Jump.** Per-class stat governing max `|Δh|` a unit can traverse in one movement step. Knight 2, Mage 3, Heretic 3. Added in v2.
+- **Kneel.** The surrender action. 3-second dramatic pause, bell toll, match ends, Coward's Brand applied.
+- **LoS.** Line of sight. Bresenham line from attacker center to target center, 3D-aware in v2.
+- **Masterpiece Benchmark.** The quality bar the game is graded against. Not "does it function" but "does it feel like FFT." See §2.
+- **MatchScene.** The client scene where 1v1 combat happens.
+- **MatchState.** The authoritative server-side representation of a live match. Fog-filtered per player before broadcast.
+- **Perk.** One of 16 between-round buffs. Draft 3, pick 1. Lasts the next round only.
+- **PerkDraftScene.** Client scene for the between-match perk pick.
+- **Pillar / Wall.** Impassable terrain types. Block LoS for ranged attacks AND Scout. Contribute infinite blocking height to 3D LoS regardless of stack.
+- **ResultsScene.** Post-match win/loss card scene. Routes winners to perk draft, losers to spectator mode.
+- **Rubble.** Difficult-terrain type. 2 energy to enter, 15 % damage reduction.
+- **SceneManager.** Client module that owns scene lifecycle and transitions.
+- **Scout.** Action. 1 energy. Reveals a 3×3 area anywhere on the map for one turn. Ignores LoS (magical insight).
+- **Server-authoritative.** The server computes game state; the client renders. Client cannot self-advance game state.
+- **Shadow Tile.** Terrain type. A unit on it is untargetable by direct single-target attacks until they take a non-trivial action.
+- **Shield Wall.** Knight ability. 50 % damage reduction + knockback negation for one turn.
+- **SoundManager.** The ONLY module in the client that plays audio.
+- **SpectatorScene.** Client scene for eliminated players watching live matches read-only.
+- **Stone.** Default terrain type. No modifiers.
+- **TournamentManager.** Server module that owns bracket state, bot fill, and perk draft orchestration.
+- **Turn timer.** 30-second countdown. Expiry forfeits remaining energy and auto-ends the turn.
+- **Vanguard Charge.** Knight ability. 3 energy. Straight-line orthogonal dash up to 3 tiles with damage + push on hit.
+
+---
+
+## 20. Decision Log
+
+Why we chose the paths we chose. Dated. Append-only. When future-us is tempted to redo something, read this first. Reversibility tags: **cheap** (a few hours), **moderate** (a PR or two), **hard** (would touch half the codebase).
+
+### 2026-04-14 — PixiJS 2D, not Three.js
+
+**Context:** M0 architecture decision. DCT needs isometric rendering; Three.js is the obvious "give me 3D" answer.
+
+**Chose:** PixiJS 8.x, pure 2D. Iso is faked with flat diamond PNGs and a rotated scene-graph transform.
+
+**Why:** Browser reach is better (PixiJS hits everywhere), the iso look is achievable without 3D, AI agents can iterate on 2D pixel sprites faster than on 3D models, and jam scope can't afford a 3D asset pipeline. Three.js would also have bought us nothing for the turn-based tactical format.
+
+**Reversibility:** hard. A lot of the renderer and input assume 2D. Don't reverse.
+
+### 2026-04-20 — ART_SPEC as a separate document
+
+**Context:** SPEC was getting long and the pixel-level detail was drowning the engineering detail. Also a dedicated sprite-artist agent needed a brief that wasn't padded with server protocol details.
+
+**Chose:** `ART_SPEC.md` at the repo root alongside SPEC. SPEC §14–§16 enumerate and refer out; ART_SPEC specifies pixels, palettes, QA checklists.
+
+**Why:** Two audiences with different needs. Engineering reads SPEC; sprite artist reads ART_SPEC; both stay synced because SPEC §14–§16 lock the canonical asset catalog and ART_SPEC is engineering-subordinate (SPEC wins on conflicts).
+
+**Reversibility:** moderate. Could re-merge but would bloat SPEC unreadably. Don't.
+
+### 2026-04-21 — Full 4-facing sprites, not mirrored pairs
+
+**Context:** With camera rotation landing in v2, the renderer needs to know how to present a unit's sprite at 4 different viewing angles. Two options: paint 2 facings and mirror for the other two (half-FFT), or paint all 4 (full-FFT).
+
+**Chose:** Full 4-facing. `_se`, `_sw`, `_ne`, `_nw` variants per animation per champion. ~92 sheets instead of ~46.
+
+**Why:** The Knight's shield is on the left arm in world space. Mirroring an SE sprite puts it on the right arm. That breaks the silhouette identity AND the world-consistency of gear. FFT solves this by painting four — that's the authenticity the masterpiece bar demands.
+
+**Reversibility:** moderate. If art budget blows, we can fall back to 2-facing + mirroring by shipping only SE/NE and flipping at runtime. Would need shield/weapon asymmetry to be de-emphasized, which hurts the silhouette test.
+
+### 2026-04-21 — Camera rotation is client-only
+
+**Context:** FFT has rotatable camera. Adding it raised the question: does the server know which rotation each client is viewing?
+
+**Chose:** No. Camera is client-only render state. Server is rotation-agnostic; all coordinates, ranges, fog, LoS are world-frame.
+
+**Why:** Rotation is a viewing preference. If it were server state, we'd have to sync it (creating input lag, reconnect questions, spectator questions) and open a new class of bugs where the "same" game looks different on each side. Making it client-only means we can't break game-state correctness by rotating, only visual presentation. Two clients at different angles is fine.
+
+**Reversibility:** hard. Making it server state later means migrating the contract and rewriting the input layer. Don't.
+
+### 2026-04-21 — Terrain has height, encoded on the tile
+
+**Context:** FFT's signature is multi-level terrain. We had to decide: add height, or keep flat and fake "tall stuff" with pillars.
+
+**Chose:** Added `Tile.height: number` to `TerrainTile`. Default 1. Arenas can override per tile.
+
+**Why:** The tactical texture of FFT depends on height gating attacks and movement (jump stat). Without it we'd have a tactical game that looks like FFT but doesn't play like one. Bolting height onto the contract at this point is cheap; doing it after M9 art ships would be expensive.
+
+**Reversibility:** moderate. Removing height means reverting the type, the validators, the LoS helper, and the renderer's stack logic. Don't plan to reverse.
+
+### 2026-04-22 — SPEC v2.0 rewrite instead of incremental patches
+
+**Context:** After committing to the FFT pivot (camera + height + 4-facing + masterpiece bar), we had the choice: patch v1.4 with M7.5-shaped inserts, or re-foundation the whole doc.
+
+**Chose:** Re-foundation. SPEC v2.0 restructures into five Parts with a narrative through-line, adds the Masterpiece Benchmark framing, and treats rotation/height/facing as first-class concepts instead of bolt-ons.
+
+**Why:** Every milestone after v1.4 would inherit the "bolted on" framing. With ~6 milestones still ahead, the compounding cost of reading a Frankenstein doc would exceed the one-time cost of a disciplined reorganization. Scope discipline: reorganize + extend, don't redesign; every closed v1.4 decision survives.
+
+**Reversibility:** cheap. v1.4 survives in git history and can be restored if v2.0 proves worse, which it won't.
+
+### 2026-04-22 — ART_SPEC v2 deferred until designer pilot returns
+
+**Context:** Should we rewrite ART_SPEC v2 now (in parallel with SPEC v2), or wait for the Knight-idle-SE pilot to return?
+
+**Chose:** Defer. Part IV of SPEC v2 writes the catalog and rules at the "what and how it's used" level; ART_SPEC v2 will extend with per-facing anatomy once the pilot proves the aesthetic is achievable.
+
+**Why:** Committing ART_SPEC v2 before the pilot locks in a target that might be unreachable. If the pilot returns and FFT-quality at 4-facing scale proves too ambitious, we adjust ART_SPEC v2 accordingly. Cheaper to write once knowing what's achievable than to write, rewrite, and rewrite again.
+
+**Reversibility:** cheap. Revisit when pilot returns.
+
+### 2026-04-22 — SPEC_V2.md as a staging file, not in-place SPEC.md edits
+
+**Context:** Landing v2 incrementally (Parts I–III, then IV, then V) across three PRs without a long-lived branch. Two options: patch SPEC.md in place section-by-section, or stage v2 in a separate file and swap at the end.
+
+**Chose:** Stage in `SPEC_V2.md`. During transition (3 PRs), SPEC.md v1.4 stays authoritative. Final swap PR archives v1.4 as `SPEC.v1.md` and promotes `SPEC_V2.md` → `SPEC.md`.
+
+**Why:** In-place edits would produce a mid-transition Frankenstein SPEC.md that's neither fully v1 nor fully v2 — exactly the state we're trying to avoid. Staged file means each intermediate commit is coherent. Three-day branch rule is respected because each PR lands in a day or less.
+
+**Reversibility:** cheap.
+
+---
+
+## 21. Definition of Done (submission checklist)
+
+**MVP (required for Vibe Jam 2026 submission):**
+
+- M0 through M13 on `main`, all green in CI.
+- A non-developer can open the game URL, click through title → lobby → class select → tournament, play a round against a bot, advance or lose, see results.
+- All three classes playable and balanced within the ±5 % matchup target.
+- Fog of war meaningfully changes engagements (confirmed via playtest observations).
+- All 16 perks in the pool and functional.
+- All 5 arenas rotate and play distinctly.
+- Surrender mechanic fires with the dramatic sequence.
+- **Rotatable camera works smoothly across all scenes (v2).**
+- **Multi-height terrain with jump-stat gating (v2).**
+- **4-facing champion sprites across all animations (v2).**
+- No placeholder text in user-facing UI.
+- No `any`, no `@ts-ignore`, no TODO blockers in shipped code.
+
+**Stretch (nice-to-have):**
+
+- Tournament stats screen at end (damage dealt, tiles moved, abilities used).
+- Spectator emotes.
+- Variable bot difficulty.
+- Replay system (match-log is already there for debugging; persistence is the stretch).
+
+**If MVP slips** (prioritized cut order):
+
+1. Cut stretch first.
+2. Cut arenas (ship 3 instead of 5).
+3. Cut perks (ship 10 instead of 16).
+
+**Never cut:** class kits, fog of war, server authority, camera rotation, terrain height, 4-facing sprites. Those *are* the game.
+
+---
+
+## 22. Open Questions
+
+Resolve before hitting the milestone that needs them. Don't resolve on day 1; they'll change as the game is built.
+
+### 22.1 Resolved during v1.x
+
+| Question | Resolution | Resolved at |
+|----------|------------|-------------|
+| Asymmetric unit counts (2v1, 3v3) or strictly 1v1? | Strictly 1v1. | Pre-M5 |
+| Pickup spawn seeding — fixed slots with random contents, or fully random positions? | Fixed slots per arena, which *chest* appears where is rolled at match start. | Pre-M7 |
+| Can losers draft a perk for the final? | No, only advancing players. | Pre-M10 |
+| Bot-vs-bot tiebreak mechanism? | Deterministic seed from match ID. | Pre-M11 |
+| Spectators see full fog-lifted state or one player's perspective? | Full state. | Pre-M12 |
+| Cosmetic unlocks / meta-progression? | No. Jam scope. | Pre-submission |
+
+### 22.2 Open during v2.x
+
+- **Before M7.5:** When camera rotates mid-animation, should in-flight tweens (attack animation frames, unit walk) snap to final or continue through rotation? **Lean:** continue playing; rotation only changes sprite selection, not frame index.
+- **Before M7.5:** Does Blink's height-ignoring behavior also ignore pillars along the destination path? **Lean:** yes — Blink doesn't traverse, it resolves. Pillars only matter for the *destination* tile being valid (not a pillar itself), not for intermediate tiles.
+- **Before M8:** Can an arena place a spawn point on a height > 1 tile? **Lean:** yes, arena author's call, but the spawn tile plus two adjacent tiles must be reachable (`|Δh| ≤ spawner.jump`) so the unit isn't stuck.
+- **Before M8:** Does High Ground's +25 % damage bonus apply from a stacked Stone tile (height > source + 1), or only when standing on the `high_ground` terrain type? **Lean:** applies based on actual height delta regardless of terrain type. High Ground terrain exists mainly for the +2-energy climb cost.
+- **Before M9:** Does a unit's facing snap instantly when it turns to attack, or tween? **Lean:** snap on the frame immediately before the attack animation; any tween is a post-M9 polish concern.
+- **Before M10:** Do perks that apply at "round start" (Second Wind, First Strike) trigger before or after the coin flip? **Lean:** before the first turn begins, regardless of who acts first.
+- **Before M11:** If a pickup spawns on a height > 0 tile that the spawning player can't reach (jump too low), does the match auto-skip that pickup? **Lean:** no; arena authoring should prevent it.
+
+---
+
+## 23. Post-Jam Ideas (explicitly out of scope)
+
+These exist so we don't accidentally build them before the jam ships.
+
+- Tekken-style "Tavern" pixel-art lobby with a walkable champion avatar.
+- Eliminated-as-ghost spectator balcony with emotes and reactions.
+- Cosmetic unlocks (champion recolors, arena effects, banners, Coward's Crown).
+- Leaderboards, ranked matchmaking, seasons.
+- Friend lists, parties, custom lobbies, chat.
+- Persistent replays (match-log already exists in memory; disk persistence is the stretch).
+- Additional classes (Ranger, Cleric, Warlock, whatever comes next).
+- Rule modifiers (3-energy mode, no-perks mode, draft-your-own-arena).
+- Asynchronous play (turn-by-email tactical).
+- Touch/mobile client.
+- Actual backstab mechanic using the already-tracked `Unit.facing`.
+- 2v2 mode.
+- Custom arena editor.
+- Rotatable-camera smoothness at arbitrary angles (currently locked to 90° increments).
+
+Everything above is a Vibe Jam 2027 or later problem. Do not touch during jam development.
+
+---
+
+## 24. Handoff Prompt — for the incoming AI ("New Kai")
+
+Paste the following into the first message of a fresh chat, after naming the model Kai and giving it repo access.
+
+```
+You're Kai, senior game-dev collaborator on Dark Council Tactic, a 1v1 FFT-style
+tactical combat game for Vibe Jam 2026. Tech: PixiJS v8, TypeScript strict,
+Node ws (port 8080), Vite (port 3000), server-authoritative. Pure 2D renderer
+faking iso with rotatable camera (90° steps) and multi-height terrain.
+
+SPEC.md in the repo root is the single source of truth for engineering.
+Current version: v2.0 (five Parts: The Game / How It Plays / How It's Built /
+How It Looks and Sounds / Reference). Read it end to end before touching code.
+When SPEC.md disagrees with your prior assumptions, SPEC.md wins; when you
+disagree with SPEC.md, open a PR against it — don't fork the design by coding
+a different mental model.
+
+ART_SPEC.md sits next to SPEC.md and is the designer-facing brief for the
+sprite artist. Engineering doesn't need to memorize it, but skim once so you
+know what's coming in public/sprites/. If engineering needs a visual change,
+patch SPEC.md §§14-16 first, then update ART_SPEC.md to match.
+
+Key v2 concepts to internalize before coding:
+- Camera rotation is CLIENT-ONLY state. Server never knows or cares.
+- Unit facing (N/E/S/W) is SERVER-AUTHORITATIVE state. Updated on move/attack/ability.
+- Tile.height is server state. Movement gated by class jump stat.
+- LoS is 3D-aware — heights block rays, not just pillars/walls.
+- Sprites are FULL 4-facing (SE/SW/NE/NW). NEVER mirror at runtime.
+- Part III §12 lists milestones. M7.5 is the v2 foundation (rotation + height + facing).
+
+Engineering principles (SPEC §9.1) and the trap list (§13.5) are the
+guardrails. Follow them even when they feel slow — they exist to keep the
+build playable and the process tight.
+
+Before your first code edit:
+  1. Run pwd, git status, git log --oneline -10 to confirm sandbox.
+  2. Read SPEC.md end to end. Yes, all of it.
+  3. Skim the decision log (Part V §20) — it explains why things are the
+     way they are.
+  4. Ask Fernando which milestone you're starting on.
+
+Workflow: branch naming kai/m<N>-<slug>, PR to main, must pass typecheck +
+unit + smoke. No direct commits to main. No @ts-ignore or any shortcuts.
+One AI agent per file at a time.
+
+Tone: peer-to-peer with Fernando. Casual, direct, opinionated. Match his
+energy without mirroring sycophantically. Own mistakes plainly. No
+corporate hedging.
+
+Confirm you've read SPEC.md and the decision log, name the milestone you're
+starting on, propose the branch name. Do not start coding until Fernando
+says go.
+```
+
+### 24.1 First actions checklist (for Fernando, if starting a fresh project)
+
+1. Create the project folder on a local (non-cloud-synced) drive.
+2. `git init` and create the GitHub repo (private during development).
+3. Drop `SPEC.md`, `ART_SPEC.md`, and a minimal `README.md` into the root.
+4. Commit: `initial: SPEC, ART_SPEC, README, gitignore`.
+5. Set up `main` branch protection in GitHub Settings → Branches: require PR, require CI checks, no force-push.
+6. Open the new chat. Paste the handoff prompt above. Attach SPEC.md and ART_SPEC.md. Say: "start at M0."
+
+From that point, the new Kai handles scaffolding M0 in a PR; Fernando reviews and merges on green CI.
+
+---
+
+*SPEC v2.0 complete — draft 2026-04-22. Parts I–V in this file. `SPEC.md` v1.4 remains authoritative until the swap PR lands (archives v1.4 as `SPEC.v1.md`, promotes `SPEC_V2.md` → `SPEC.md`).*
 — Kai
