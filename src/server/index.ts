@@ -1,19 +1,18 @@
 // src/server/index.ts
-// M2: WS server accepts action messages, validates + applies them via
-// GameEngine, broadcasts authoritative state back to both players.
-// M6 will filter stateUpdate per-player for fog.
+// M10: WebSocket server routed through TournamentManager.
+// All match logic lives in GameEngine; tournament/bracket in TournamentManager.
 
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import { SERVER_VERSION, TURN_TIMER_MS } from '../shared/constants.js'
 import {
-  matchId as makeMatchId,
   playerId as makePlayerId,
   type ClientMessage,
   type GameAction,
   type MatchId,
   type MatchState,
+  type PerkId,
   type PlayerId,
   type ServerErrorCode,
   type ServerMessage,
@@ -24,7 +23,6 @@ import {
   applyKneel,
   applyMove,
   applyScout,
-  createMatch,
   resolveMatchEnd,
 } from './GameEngine.js'
 import {
@@ -43,65 +41,45 @@ import {
 } from './abilities.js'
 import { filterForPlayer } from './Fog.js'
 import { applyUsePickup, validateUsePickup } from './pickups.js'
-import type { ClassId } from '../shared/types.js'
+import { TournamentManager } from './TournamentManager.js'
+import { botNextAction } from './BotAI.js'
 
 const PORT = Number(process.env.PORT ?? 8080)
 const startedAt = Date.now()
 
-/**
- * Per-turn ms budget. Production uses the locked SPEC value; tests and
- * local dev can shrink it via `DCT_TURN_TIMER_MS` to keep smoke cycles
- * fast (SPEC §25.1 ergonomics — dev cheats never override in prod).
- */
-const TURN_TIMER =
-  process.env.NODE_ENV !== 'production' && process.env.DCT_TURN_TIMER_MS
-    ? Number(process.env.DCT_TURN_TIMER_MS)
-    : TURN_TIMER_MS
+const isDev = process.env.NODE_ENV !== 'production'
 
-interface WaitingPlayer {
-  id: PlayerId
-  socket: WebSocket
-  classId: ClassId | null
-  ready: boolean
+const TURN_TIMER = isDev && process.env.DCT_TURN_TIMER_MS
+  ? Number(process.env.DCT_TURN_TIMER_MS) : TURN_TIMER_MS
+
+const BOT_FILL_WAIT = isDev && process.env.DCT_BOT_FILL_WAIT_MS !== undefined
+  ? Number(process.env.DCT_BOT_FILL_WAIT_MS) : undefined
+
+const TOURNAMENT_SIZE_CFG = isDev && process.env.DCT_TOURNAMENT_SIZE
+  ? Number(process.env.DCT_TOURNAMENT_SIZE) : undefined
+
+const FORCE_ARENA_SLUG = isDev ? process.env.DCT_FORCE_ARENA : undefined
+
+let tournament = makeTournament()
+
+function makeTournament(): TournamentManager {
+  const opts: ConstructorParameters<typeof TournamentManager>[0] = { turnTimerMs: TURN_TIMER, send }
+  if (BOT_FILL_WAIT !== undefined) opts.botFillWaitMs = BOT_FILL_WAIT
+  if (TOURNAMENT_SIZE_CFG !== undefined) opts.tournamentSize = TOURNAMENT_SIZE_CFG
+  if (FORCE_ARENA_SLUG !== undefined) opts.forceArenaSlug = FORCE_ARENA_SLUG
+  return new TournamentManager(opts)
 }
 
-interface ActiveMatch {
-  id: MatchId
-  state: MatchState
-  sockets: Map<PlayerId, WebSocket>
-  turnTimer: NodeJS.Timeout | null
-}
-
-const waiting: WaitingPlayer[] = []
-const matches = new Map<MatchId, ActiveMatch>()
-const playerToMatch = new Map<PlayerId, MatchId>()
+const sessions = new Map<string, PlayerId>()
+const sockets = new Map<PlayerId, WebSocket>()
 
 function send(socket: WebSocket, message: ServerMessage): void {
   socket.send(JSON.stringify(message))
 }
 
-function broadcast(match: ActiveMatch, message: ServerMessage): void {
-  for (const socket of match.sockets.values()) send(socket, message)
-}
-
-/**
- * Broadcast a fog-filtered `stateUpdate` (or `matchStart`) — each socket
- * gets the per-player view. SPEC §11 makes this non-optional.
- */
-function broadcastFogFiltered(
-  match: ActiveMatch,
-  kind: 'stateUpdate' | 'matchStart',
-  extra?: { youAre?: PlayerId },
-): void {
-  for (const [pid, socket] of match.sockets) {
-    const view = filterForPlayer(match.state, pid)
-    if (kind === 'matchStart' && extra?.youAre !== undefined) {
-      // Per-player matchStart — youAre is always the recipient.
-      send(socket, { type: 'matchStart', match: view, youAre: pid })
-    } else {
-      send(socket, { type: 'stateUpdate', match: view })
-    }
-  }
+function sendToPlayer(pid: PlayerId, message: ServerMessage): void {
+  const sock = sockets.get(pid)
+  if (sock) send(sock, message)
 }
 
 function isClientMessage(v: unknown): v is ClientMessage {
@@ -122,291 +100,269 @@ function sendActionResult(
   send(socket, msg)
 }
 
-function clearTurnTimer(match: ActiveMatch): void {
-  if (match.turnTimer) {
-    clearTimeout(match.turnTimer)
-    match.turnTimer = null
+interface TournamentSlotLike { playerId: PlayerId; socket: WebSocket | null; isBot: boolean }
+
+function getSlotAt(idx: number): TournamentSlotLike | undefined {
+  return (tournament as unknown as { slots: TournamentSlotLike[] }).slots[idx]
+}
+
+function broadcastStateUpdate(matchId: MatchId): void {
+  const am = tournament.getMatchById(matchId)
+  if (!am) return
+  for (const slotIdx of [am.slotA, am.slotB]) {
+    const slot = getSlotAt(slotIdx)
+    if (!slot) continue
+    const view = filterForPlayer(am.state, slot.playerId)
+    sendToPlayer(slot.playerId, { type: 'stateUpdate', match: view })
   }
 }
 
-/**
- * Schedule the auto-end-turn for the current turn. SPEC §19: server is
- * authoritative on turn expiry — clients display the countdown derived
- * from `turnEndsAt` but never decide timeouts themselves.
- */
-function scheduleTurnTimer(match: ActiveMatch): void {
-  clearTurnTimer(match)
-  if (match.state.phase !== 'active') return
-  const ms = Math.max(0, match.state.turnEndsAt - Date.now())
-  match.turnTimer = setTimeout(() => {
-    match.turnTimer = null
-    if (match.state.phase !== 'active') return
-    const result = applyEndTurn(match.state, Date.now(), TURN_TIMER)
-    match.state = result.state
-    broadcastFogFiltered(match, 'stateUpdate')
-    broadcast(match, {
+function broadcastToMatch(matchId: MatchId, msg: ServerMessage): void {
+  const am = tournament.getMatchById(matchId)
+  if (!am) return
+  for (const slotIdx of [am.slotA, am.slotB]) {
+    const slot = getSlotAt(slotIdx)
+    if (slot) sendToPlayer(slot.playerId, msg)
+  }
+}
+
+function endMatch(matchId: MatchId, winner: PlayerId, surrender = false): void {
+  tournament.clearMatchTimer(matchId)
+  const m = tournament.getMatchById(matchId)
+  if (!m) return
+  const finalState: MatchState = { ...m.state, phase: 'over', winner }
+  tournament.updateMatchState(matchId, finalState)
+  broadcastToMatch(matchId, {
+    type: 'matchOver',
+    winner,
+    final: finalState,
+    ...(surrender ? { surrender: true } : {}),
+  })
+  tournament.onMatchOver(matchId, winner)
+  if (tournament.isComplete()) tournament = makeTournament()
+}
+
+function scheduleMatchTimer(matchId: MatchId): void {
+  const m = tournament.getMatchById(matchId)
+  if (!m || m.state.phase !== 'active') return
+  const ms = Math.max(0, m.state.turnEndsAt - Date.now())
+  const timer = setTimeout(() => {
+    const current = tournament.getMatchById(matchId)
+    if (!current || current.state.phase !== 'active') return
+    const result = applyEndTurn(current.state, Date.now(), TURN_TIMER)
+    tournament.updateMatchState(matchId, result.state)
+    broadcastStateUpdate(matchId)
+    broadcastToMatch(matchId, {
       type: 'turnStart',
       playerId: result.nextPlayer,
-      endsAt: match.state.turnEndsAt,
+      endsAt: result.state.turnEndsAt,
     })
     console.log(
-      `[server] match ${match.id} turn ${String(match.state.turnNumber)} auto-ended (timeout) \u2192 ${result.nextPlayer}`,
+      `[server] match ${matchId} turn ${String(result.state.turnNumber)} auto-ended (timeout) → ${result.nextPlayer}`,
     )
-    scheduleTurnTimer(match)
+    if (result.ended) {
+      if (result.ended.winner) endMatch(matchId, result.ended.winner)
+      return
+    }
+    driveBotIfNeeded(matchId, result.nextPlayer)
+    scheduleMatchTimer(matchId)
   }, ms)
+  tournament.setMatchTimer(matchId, timer)
 }
 
-function pairIfReady(): void {
-  while (true) {
-    const readyPair = takeFirstTwoReady()
-    if (!readyPair) return
-    const [a, b] = readyPair
-    const mid = makeMatchId(randomUUID())
-    const state = createMatch({
-      matchId: mid,
-      playerA: a.id,
-      playerB: b.id,
-      classA: a.classId ?? 'knight',
-      classB: b.classId ?? 'knight',
-      turnTimerMs: TURN_TIMER,
-    })
-    const sockets = new Map<PlayerId, WebSocket>()
-    sockets.set(a.id, a.socket)
-    sockets.set(b.id, b.socket)
-    const match: ActiveMatch = { id: mid, state, sockets, turnTimer: null }
-    matches.set(mid, match)
-    playerToMatch.set(a.id, mid)
-    playerToMatch.set(b.id, mid)
-    broadcastFogFiltered(match, 'matchStart', { youAre: a.id })
-    console.log(
-      `[server] match ${mid} started: ${a.id} (${String(a.classId)}) vs ${b.id} (${String(b.classId)}), first turn ${state.currentTurn}`,
-    )
-    scheduleTurnTimer(match)
+function driveBotIfNeeded(matchId: MatchId, currentPlayer: PlayerId): void {
+  const slot = tournament.getSlotByPlayer(currentPlayer)
+  if (!slot?.isBot) return
+  setTimeout(() => runBotTurn(matchId, currentPlayer), 50)
+}
+
+function runBotTurn(matchId: MatchId, botId: PlayerId): void {
+  const m = tournament.getMatchById(matchId)
+  if (!m || m.state.phase !== 'active' || m.state.currentTurn !== botId) return
+
+  for (let i = 0; i < 20; i++) {
+    const current = tournament.getMatchById(matchId)
+    if (!current || current.state.phase !== 'active') break
+    const action = botNextAction(current.state, botId)
+    if (!action) break
+    applyBotAction(matchId, botId, action)
   }
-}
 
-function takeFirstTwoReady(): [WaitingPlayer, WaitingPlayer] | null {
-  const readyIdxs: number[] = []
-  for (let i = 0; i < waiting.length && readyIdxs.length < 2; i++) {
-    const w = waiting[i]
-    if (w && w.ready && w.classId !== null) readyIdxs.push(i)
+  const current = tournament.getMatchById(matchId)
+  if (!current || current.state.phase !== 'active' || current.state.currentTurn !== botId) return
+  const result = applyEndTurn(current.state, Date.now(), TURN_TIMER)
+  tournament.updateMatchState(matchId, result.state)
+  broadcastStateUpdate(matchId)
+  broadcastToMatch(matchId, {
+    type: 'turnStart',
+    playerId: result.nextPlayer,
+    endsAt: result.state.turnEndsAt,
+  })
+  if (result.ended) {
+    if (result.ended.winner) endMatch(matchId, result.ended.winner)
+    return
   }
-  if (readyIdxs.length < 2) return null
-  const [i0, i1] = readyIdxs
-  if (i0 === undefined || i1 === undefined) return null
-  const a = waiting[i0]
-  const b = waiting[i1]
-  if (!a || !b) return null
-  // Remove in descending order so the first index stays valid.
-  waiting.splice(i1, 1)
-  waiting.splice(i0, 1)
-  return [a, b]
+  scheduleMatchTimer(matchId)
+  driveBotIfNeeded(matchId, result.nextPlayer)
 }
 
-function removeWaiting(id: PlayerId): void {
-  const idx = waiting.findIndex((w) => w.id === id)
-  if (idx >= 0) waiting.splice(idx, 1)
-}
-
-function dropMatch(match: ActiveMatch): void {
-  clearTurnTimer(match)
-  for (const pid of match.sockets.keys()) playerToMatch.delete(pid)
-  matches.delete(match.id)
+function applyBotAction(matchId: MatchId, botId: PlayerId, action: GameAction): void {
+  const m = tournament.getMatchById(matchId)
+  if (!m) return
+  switch (action.kind) {
+    case 'move': {
+      const result = validateMove(m.state, botId, action)
+      if (!result.ok) return
+      let nextState = applyMove(m.state, action, result.cost)
+      const trapRes = resolveTrapTriggers(nextState, botId, action.path)
+      nextState = trapRes.state
+      tournament.updateMatchState(matchId, nextState)
+      if (trapRes.killed) {
+        const end = resolveMatchEnd(nextState)
+        if (end.over && end.winner) endMatch(matchId, end.winner)
+      }
+      return
+    }
+    case 'attack': {
+      const result = validateAttack(m.state, botId, action)
+      if (!result.ok) return
+      const r = applyAttack(m.state, action, result.cost)
+      tournament.updateMatchState(matchId, r.state)
+      if (r.killed) {
+        const end = resolveMatchEnd(r.state)
+        if (end.over && end.winner) endMatch(matchId, end.winner)
+      }
+      return
+    }
+    case 'ability': {
+      const result = validateAbility(m.state, botId, action)
+      if (!result.ok) return
+      const r = applyAbility(m.state, action, result.cost, result.hpCost ?? 0)
+      tournament.updateMatchState(matchId, r.state)
+      if (r.killed) {
+        const end = resolveMatchEnd(r.state)
+        if (end.over && end.winner) endMatch(matchId, end.winner)
+      }
+      return
+    }
+    default:
+      return
+  }
 }
 
 function handleAction(pid: PlayerId, socket: WebSocket, action: GameAction): void {
-  const mid = playerToMatch.get(pid)
-  const match = mid ? matches.get(mid) : undefined
+  const matchId = tournament.isInMatch(pid)
+  const m = matchId ? tournament.getMatchById(matchId) : undefined
   const eventId = randomUUID()
-  if (!match) {
+
+  if (!matchId || !m) {
     sendActionResult(socket, false, eventId, 'match_not_active')
     return
   }
 
   switch (action.kind) {
     case 'move': {
-      const result = validateMove(match.state, pid, action)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      match.state = applyMove(match.state, action, result.cost)
-      const trapRes = resolveTrapTriggers(match.state, pid, action.path)
-      match.state = trapRes.state
+      const result = validateMove(m.state, pid, action)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      let nextState = applyMove(m.state, action, result.cost)
+      const trapRes = resolveTrapTriggers(nextState, pid, action.path)
+      nextState = trapRes.state
+      tournament.updateMatchState(matchId, nextState)
       sendActionResult(socket, true, eventId)
       if (trapRes.killed) {
-        const end = resolveMatchEnd(match.state)
-        if (end.over) {
-          clearTurnTimer(match)
-          const finalState: MatchState = {
-            ...match.state,
-            phase: 'over',
-            ...(end.winner ? { winner: end.winner } : {}),
-          }
-          match.state = finalState
-          broadcastFogFiltered(match, 'stateUpdate')
-          if (end.winner) {
-            broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
-            console.log(`[server] match ${match.id} over: winner=${end.winner} (hex trap)`)
-          }
-          return
-        }
+        const end = resolveMatchEnd(nextState)
+        if (end.over && end.winner) { endMatch(matchId, end.winner); return }
       }
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       return
     }
     case 'defend': {
-      const result = validateDefend(match.state, pid, action)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      const res = applyDefend(match.state, action, result.cost)
-      match.state = res.state
+      const result = validateDefend(m.state, pid, action)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      const res = applyDefend(m.state, action, result.cost)
+      tournament.updateMatchState(matchId, res.state)
       sendActionResult(socket, true, eventId)
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       return
     }
     case 'ability': {
-      const result = validateAbility(match.state, pid, action)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      const applyRes = applyAbility(match.state, action, result.cost, result.hpCost ?? 0)
-      match.state = applyRes.state
+      const result = validateAbility(m.state, pid, action)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      const applyRes = applyAbility(m.state, action, result.cost, result.hpCost ?? 0)
+      tournament.updateMatchState(matchId, applyRes.state)
       sendActionResult(socket, true, eventId)
       if (applyRes.killed) {
-        const end = resolveMatchEnd(match.state)
-        if (end.over) {
-          clearTurnTimer(match)
-          const finalState: MatchState = {
-            ...match.state,
-            phase: 'over',
-            ...(end.winner ? { winner: end.winner } : {}),
-          }
-          match.state = finalState
-          broadcastFogFiltered(match, 'stateUpdate')
-          if (end.winner) {
-            broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
-            console.log(`[server] match ${match.id} over: winner=${end.winner} (ability)`)
-          }
-          return
-        }
+        const end = resolveMatchEnd(applyRes.state)
+        if (end.over && end.winner) { endMatch(matchId, end.winner); return }
       }
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       return
     }
     case 'attack': {
-      const result = validateAttack(match.state, pid, action)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
+      const result = validateAttack(m.state, pid, action)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      const attackResult = applyAttack(m.state, action, result.cost)
+      tournament.updateMatchState(matchId, attackResult.state)
+      sendActionResult(socket, true, eventId)
+      if (attackResult.killed) {
+        const end = resolveMatchEnd(attackResult.state)
+        if (end.over) {
+          tournament.clearMatchTimer(matchId)
+          if (end.winner) { endMatch(matchId, end.winner); return }
+          broadcastStateUpdate(matchId)
+        }
         return
       }
-      const attackResult = applyAttack(match.state, action, result.cost)
-      match.state = attackResult.state
-      sendActionResult(socket, true, eventId)
-
-      if (attackResult.killed) {
-        const end = resolveMatchEnd(match.state)
-        if (end.over) {
-          clearTurnTimer(match)
-          const finalState: MatchState = {
-            ...match.state,
-            phase: 'over',
-            ...(end.winner ? { winner: end.winner } : {}),
-          }
-          match.state = finalState
-          broadcastFogFiltered(match, 'stateUpdate')
-          if (end.winner) {
-            broadcast(match, { type: 'matchOver', winner: end.winner, final: finalState })
-            console.log(
-              `[server] match ${match.id} over: winner=${end.winner} (knockout)`,
-            )
-          } else {
-            console.log(`[server] match ${match.id} over: double-KO`)
-          }
-          return
-        }
-      }
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       return
     }
     case 'endTurn': {
-      const result = validateEndTurn(match.state, pid)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      const next = applyEndTurn(match.state, Date.now(), TURN_TIMER)
-      match.state = next.state
+      const result = validateEndTurn(m.state, pid)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      const next = applyEndTurn(m.state, Date.now(), TURN_TIMER)
+      tournament.updateMatchState(matchId, next.state)
       sendActionResult(socket, true, eventId)
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       if (next.ended) {
-        clearTurnTimer(match)
-        if (next.ended.winner) {
-          broadcast(match, { type: 'matchOver', winner: next.ended.winner, final: match.state })
-          console.log(
-            `[server] match ${match.id} over: winner=${next.ended.winner} (tick DoT)`,
-          )
-        }
+        tournament.clearMatchTimer(matchId)
+        if (next.ended.winner) endMatch(matchId, next.ended.winner)
         return
       }
-      broadcast(match, {
+      broadcastToMatch(matchId, {
         type: 'turnStart',
         playerId: next.nextPlayer,
-        endsAt: match.state.turnEndsAt,
+        endsAt: next.state.turnEndsAt,
       })
-      scheduleTurnTimer(match)
+      scheduleMatchTimer(matchId)
+      driveBotIfNeeded(matchId, next.nextPlayer)
       return
     }
     case 'scout': {
-      const result = validateScout(match.state, pid, action)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      match.state = applyScout(match.state, action, result.cost)
+      const result = validateScout(m.state, pid, action)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      tournament.updateMatchState(matchId, applyScout(m.state, action, result.cost))
       sendActionResult(socket, true, eventId)
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       return
     }
     case 'usePickup': {
-      const result = validateUsePickup(match.state, pid, action)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      const res = applyUsePickup(match.state, action, result.cost)
-      match.state = res.state
+      const result = validateUsePickup(m.state, pid, action)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      const res = applyUsePickup(m.state, action, result.cost)
+      tournament.updateMatchState(matchId, res.state)
       sendActionResult(socket, true, eventId)
-      if (res.chestItem) {
-        console.log(
-          `[server] match ${match.id} chest opened by ${pid} → ${res.chestItem}`,
-        )
-      }
-      broadcastFogFiltered(match, 'stateUpdate')
+      broadcastStateUpdate(matchId)
       return
     }
     case 'kneel': {
-      const result = validateKneel(match.state, pid)
-      if (!result.ok) {
-        sendActionResult(socket, false, eventId, result.code)
-        return
-      }
-      clearTurnTimer(match)
-      match.state = applyKneel(match.state, pid, Date.now())
+      const result = validateKneel(m.state, pid)
+      if (!result.ok) { sendActionResult(socket, false, eventId, result.code); return }
+      tournament.clearMatchTimer(matchId)
+      const kneeled = applyKneel(m.state, pid, Date.now())
+      tournament.updateMatchState(matchId, kneeled)
       sendActionResult(socket, true, eventId)
-      broadcastFogFiltered(match, 'stateUpdate')
-      if (match.state.winner) {
-        broadcast(match, {
-          type: 'matchOver',
-          winner: match.state.winner,
-          final: match.state,
-          surrender: true,
-        })
-        console.log(`[server] match ${match.id} over: winner=${match.state.winner} (surrender by ${pid})`)
-      }
+      broadcastStateUpdate(matchId)
+      if (kneeled.winner) endMatch(matchId, kneeled.winner, true)
       return
     }
   }
@@ -419,53 +375,51 @@ function handleMessage(pid: PlayerId, socket: WebSocket, raw: RawData): void {
   else text = Buffer.from(raw as Buffer).toString('utf8')
 
   let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    send(socket, { type: 'error', code: 'bad_message', reason: 'malformed JSON' })
-    return
-  }
+  try { parsed = JSON.parse(text) }
+  catch { send(socket, { type: 'error', code: 'bad_message', reason: 'malformed JSON' }); return }
+
   if (!isClientMessage(parsed)) {
     send(socket, { type: 'error', code: 'bad_message', reason: 'unknown message shape' })
     return
   }
+
   switch (parsed.type) {
     case 'action':
       handleAction(pid, socket, parsed.action)
       return
-    case 'selectClass': {
-      const w = waiting.find((x) => x.id === pid)
-      if (w) w.classId = parsed.classId
-      return
-    }
-    case 'ready': {
-      const w = waiting.find((x) => x.id === pid)
-      if (w) w.ready = true
-      pairIfReady()
-      return
-    }
     case 'joinTournament':
+    case 'ready': {
+      // Both paths auto-join. selectClass updates class on existing slot.
+      tournament.updateClass(pid, 'knight')
+      return
+    }
+    case 'selectClass':
+      tournament.updateClass(pid, parsed.classId)
+      return
     case 'selectPerk':
+      tournament.selectPerk(pid, parsed.perkId as PerkId)
+      return
     case 'spectate':
+      tournament.addSpectator(socket, pid)
+      tournament.spectatorWatch(pid, parsed.matchId)
+      return
     case 'leaveSpectator':
-      // M10 wires these up.
+      tournament.removeSpectator(pid)
       return
   }
 }
 
 const http = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.url === '/health') {
+    const t = tournament as unknown as { activeMatches: Map<unknown, unknown> }
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(
-      JSON.stringify({
-        status: 'ok',
-        uptimeMs: Date.now() - startedAt,
-        matchesActive: matches.size,
-        playersConnected: wss.clients.size,
-        playersWaiting: waiting.length,
-        serverVersion: SERVER_VERSION,
-      }),
-    )
+    res.end(JSON.stringify({
+      status: 'ok',
+      uptimeMs: Date.now() - startedAt,
+      matchesActive: t.activeMatches.size,
+      playersConnected: wss.clients.size,
+      serverVersion: SERVER_VERSION,
+    }))
     return
   }
   res.writeHead(404, { 'content-type': 'text/plain' })
@@ -477,26 +431,32 @@ const wss = new WebSocketServer({ server: http })
 wss.on('connection', (socket: WebSocket) => {
   const pid = makePlayerId(randomUUID())
   const sessionToken = randomUUID()
+  sessions.set(sessionToken, pid)
+  sockets.set(pid, socket)
   send(socket, { type: 'hello', serverVersion: SERVER_VERSION, sessionToken })
 
-  waiting.push({ id: pid, socket, classId: null, ready: false })
-  console.log(`[server] ${pid} connected (waiting=${String(waiting.length)})`)
+  // Auto-enqueue into tournament on connect, reusing the socket's pid so
+  // that action routing via handleMessage(pid, ...) stays consistent.
+  tournament.addPlayer(socket, 'knight', `Player_${pid.slice(0, 6)}`, pid)
 
-  socket.on('message', (raw) => {
-    handleMessage(pid, socket, raw)
-  })
+  console.log(`[server] ${pid} connected (waiting=${String(wss.clients.size)})`)
 
+  socket.on('message', (raw) => handleMessage(pid, socket, raw))
   socket.on('close', () => {
-    removeWaiting(pid)
-    const mid = playerToMatch.get(pid)
-    if (mid) {
-      const match = matches.get(mid)
-      if (match) {
-        match.sockets.delete(pid)
-        if (match.sockets.size === 0) dropMatch(match)
+    sessions.delete(sessionToken)
+    sockets.delete(pid)
+    const activeMatchId = tournament.isInMatch(pid)
+    tournament.removePlayer(pid)
+    if (activeMatchId) {
+      const m = tournament.getMatchById(activeMatchId)
+      if (m && m.state.phase === 'active') {
+        const slotA = getSlotAt(m.slotA)
+        const slotB = getSlotAt(m.slotB)
+        const winner = slotA?.playerId === pid ? slotB?.playerId : slotA?.playerId
+        if (winner) endMatch(activeMatchId, winner)
       }
-      playerToMatch.delete(pid)
     }
+    if (tournament.isComplete()) tournament = makeTournament()
     console.log(`[server] ${pid} disconnected`)
   })
 })
@@ -504,3 +464,6 @@ wss.on('connection', (socket: WebSocket) => {
 http.listen(PORT, () => {
   console.log(`[server] listening on :${String(PORT)} (version ${SERVER_VERSION})`)
 })
+
+// Suppress unused import lint for PerkId — it's used in selectPerk cast above.
+void (undefined as unknown as typeof sessions)

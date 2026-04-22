@@ -220,6 +220,26 @@ export function applyAbility(
 ): AbilityApplyResult {
   const unit = state.units.find((u) => u.id === action.unitId)
   if (!unit) return { state, killed: false }
+
+  // Perk: counterspell — first enemy ability of the round fizzles; caster still pays energy.
+  const opponentUnit = state.units.find((u) => u.ownerId !== unit.ownerId && u.hp > 0)
+  const opponentHasCounterspell = opponentUnit?.statuses.some(
+    (s) => s.kind === 'counterspell_active',
+  )
+  if (opponentHasCounterspell && opponentUnit) {
+    const actorEnergy = (state.energy[unit.ownerId] ?? 0) - cost
+    const units = state.units.map((u) => {
+      if (u.id === opponentUnit.id) {
+        return { ...u, statuses: u.statuses.filter((s) => s.kind !== 'counterspell_active') }
+      }
+      return u
+    })
+    return {
+      state: { ...state, units, energy: { ...state.energy, [unit.ownerId]: actorEnergy } },
+      killed: false,
+    }
+  }
+
   const abilityId = action.abilityId as AbilityId
   switch (abilityId) {
     case 'shield_wall':
