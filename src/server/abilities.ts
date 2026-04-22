@@ -34,10 +34,13 @@ import {
   VANGUARD_CHARGE_MAX_TILES,
 } from '../shared/constants.js'
 import {
+  facingToward,
   isInBounds,
-  lineOfSight as losClear,
+  lineOfSight3D,
   manhattanDistance,
   positionKey,
+  tileHeight,
+  visionBlockerHeights,
 } from '../shared/grid.js'
 import {
   type AbilityId,
@@ -240,26 +243,44 @@ export function applyAbility(
     }
   }
 
+  // SPEC v2 §6.6 — abilities pivot the caster toward their target (a tile
+  // or a unit). Self-cast abilities (Shield Wall, Iron Stance, Blood Tithe)
+  // have no target and leave facing untouched.
+  const targetPos: Position | undefined =
+    action.target ?? state.units.find((u) => u.id === action.targetId)?.pos
+  let nextState = state
+  let actingUnit = unit
+  if (targetPos) {
+    const newFacing = facingToward(unit.pos, targetPos)
+    if (newFacing !== unit.facing) {
+      actingUnit = { ...unit, facing: newFacing }
+      nextState = {
+        ...state,
+        units: state.units.map((u) => (u.id === unit.id ? actingUnit : u)),
+      }
+    }
+  }
+
   const abilityId = action.abilityId as AbilityId
   switch (abilityId) {
     case 'shield_wall':
-      return applyShieldWall(state, unit, cost)
+      return applyShieldWall(nextState, actingUnit, cost)
     case 'vanguard_charge':
-      return applyVanguardCharge(state, unit, action, cost)
+      return applyVanguardCharge(nextState, actingUnit, action, cost)
     case 'iron_stance':
-      return applyIronStance(state, unit, cost)
+      return applyIronStance(nextState, actingUnit, cost)
     case 'cinder_bolt':
-      return applyCinderBolt(state, unit, action, cost)
+      return applyCinderBolt(nextState, actingUnit, action, cost)
     case 'ash_cloud':
-      return applyAshCloud(state, unit, action, cost)
+      return applyAshCloud(nextState, actingUnit, action, cost)
     case 'blink':
-      return applyBlink(state, unit, action, cost)
+      return applyBlink(nextState, actingUnit, action, cost)
     case 'blood_tithe':
-      return applyBloodTithe(state, unit, cost, hpCost)
+      return applyBloodTithe(nextState, actingUnit, cost, hpCost)
     case 'hex_trap':
-      return applyHexTrap(state, unit, action, cost)
+      return applyHexTrap(nextState, actingUnit, action, cost)
     case 'desecrate':
-      return applyDesecrate(state, unit, action, cost)
+      return applyDesecrate(nextState, actingUnit, action, cost)
   }
 }
 
@@ -435,26 +456,16 @@ function validateCinderBolt(
   if (manhattanDistance(unit.pos, target.pos) > CINDER_BOLT_RANGE) {
     return { ok: false, code: 'out_of_range' }
   }
-  // Ranged LoS check: pillars/walls/ash-clouds block the bolt.
-  const losBlockers = new Set<string>()
-  for (let y = 0; y < state.grid.tiles.length; y++) {
-    const row = state.grid.tiles[y]
-    if (!row) continue
-    for (let x = 0; x < row.length; x++) {
-      const tile = row[x]
-      if (!tile) continue
-      if (tile.type === 'pillar' || tile.type === 'wall') {
-        losBlockers.add(positionKey({ x, y }))
-      }
-    }
-  }
-  for (const ac of state.ashClouds) for (const t of ac.tiles) losBlockers.add(positionKey(t))
-  if (!losClear(losBlockers, unit.pos, target.pos)) {
+  // Ranged LoS — 3D-aware (SPEC v2 §6.3). Pillars/walls/ash-clouds = Infinity;
+  // stack heights interpolate between attacker and target along the line.
+  const heights = visionBlockerHeights(state)
+  const fromH = tileHeight(state, unit.pos)
+  const toH = tileHeight(state, target.pos)
+  if (!lineOfSight3D(unit.pos, fromH, target.pos, toH, heights)) {
     return { ok: false, code: 'no_line_of_sight' }
   }
   const tt = tileAt(state, target.pos)
   if (tt?.type === 'shadow') return { ok: false, code: 'target_untargetable' }
-  // LoS is always clear on the stone grid until pillars arrive in M7.
   return { ok: true, cost }
 }
 
