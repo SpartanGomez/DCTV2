@@ -796,7 +796,7 @@ If the agent hits any of these, stop and ask — do not invent an answer.
 
 ---
 
-*ART_SPEC v1.3 — 2026-04-20. Paired with SPEC.md v1.4.*
+*ART_SPEC v1.3 — 2026-04-20. Paired with SPEC.md v2.0 (ART_SPEC v2 forthcoming post-pilot).*
 *If this file disagrees with SPEC.md §21–§22, SPEC.md is the engineering source of truth — patch this file to match.*
 *The game is dark. The art has to earn that.*
 — Kai

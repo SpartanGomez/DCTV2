@@ -3,344 +3,337 @@
 **Status:** Authoritative. Single source of truth.
 **Owner:** Fernando Gomez (design + final review)
 **Target:** Vibe Jam 2026 submission
-**Version:** 1.4 (2026-04-20)
-**Companion:** `ART_SPEC.md` — the designer/sprite brief. Engineering reads this doc; the sprite artist reads ART_SPEC.md. Both must stay in sync (§21–§22 here are the canonical numbers).
+**Version:** 2.0 (2026-04-22)
+**Supersedes:** `SPEC.v1.md` (v1.4, archived in repo for history).
+**Companion:** `ART_SPEC.md` (currently v1.3; ART_SPEC v2 follows once the designer pilot validates FFT-quality aesthetic is achievable at full 4-facing scale).
 
 ---
 
 ## 0. How to Read This
 
-This document is for the AI pair-programmer ("Kai" and anyone else) joining the new repo. Read it end to end before touching code. When you disagree with something, open a PR against this file. Don't fork the design by starting to code against a different mental model.
+This document is the authoritative design spec. Read it end to end before touching code or art. When you disagree with something, open a PR against this file — don't fork the design by coding against a different mental model.
 
-If you are the incoming AI and this is your first message on the project: go to §30 (Handoff Prompt & First Actions) after you've read the rest.
+Structure:
 
----
+- **Part I — The Game.** What we're making and what "done" looks like at masterpiece quality.
+- **Part II — How It Plays.** Mechanics, numbers, design decisions.
+- **Part III — How It's Built.** Engineering foundation — architecture, contracts, repo, milestones, workflow.
+- **Part IV — How It Looks and Sounds.** Art and audio direction. Refers out to `ART_SPEC.md` for pixel-level details.
+- **Part V — Reference.** Glossary, decision log, appendices.
 
-## 1. Elevator Pitch
-
-Two champions enter an ashen arena. Each turn, you spend 5 energy on moves, attacks, scouting, defending, ability casts, or picking up battlefield items on a fog-shrouded 8×8 isometric grid. Win the duel, draft a perk, face the next opponent. Last one standing in an 8-player single-elimination tournament wins. Final Fantasy Tactics combat meets Slay the Spire's between-fight decisions, wearing Diablo I's palette. Browser-based, 1v1 online, matches last 5–10 minutes.
-
----
-
-## 2. Core Pillars
-
-**Every energy point is a decision.** Five energy per turn, no carry-over, use-or-lose. No filler turns. The player should feel the tension of every spend.
-
-**Information is power.** Fog of war is not decoration. Scouting costs energy, traps hide in the dark, the Heretic class is built around lying to the opponent with fog. Taking information from your opponent is as valuable as taking HP.
-
-**Dark, heavy, oppressive atmosphere.** Ash and blood. Flickering torchlight. Not bright fantasy. Palette references: Diablo I, FFT PS1, Dark Souls armor language.
-
-**Readable at a glance.** The art is dark but the game state must be crystal clear. Every champion is identifiable from silhouette. Every tile type has an unambiguous texture. Every ability has a telegraph.
+Every closed numeric decision from v1.4 (HP, damage, ability costs, palette cells, turn timer, energy, grid size, perk effects) survives in v2 — we reorganized, we didn't redesign. What's new in v2 is the **FFT pivot**: rotatable iso camera, multi-height terrain, 4-facing sprites, and an explicit masterpiece quality bar.
 
 ---
 
-## 3. Engineering Principles
+# Part I — The Game
 
-Non-negotiable.
+## 1. Identity & Thesis
 
-**Playable-first, always.** Every milestone gate is a smoke test: two browser tabs, lobby to match, take one action, see the result. If the smoke test is red, the build is red. Visual polish ships after gameplay, not beside it.
+Two champions enter an ashen arena. Each turn, you spend 5 energy on moves, attacks, scouting, defending, ability casts, or picking up battlefield items on a fog-shrouded 8×8 isometric grid with multi-height terrain and a rotatable camera. Win the duel, draft a perk, face the next opponent. Last one standing in an 8-player single-elimination tournament wins.
 
-**Server is truth.** Client renders what the server tells it to. Client does not compute damage, does not know whose turn it is, does not predict outcomes. Every action goes to the server, is validated, and the authoritative state comes back. Fog of war is filtered *server-side* before the state reaches the client.
-
-**Deterministic combat.** No RNG on hit/miss/crit. Damage values are fixed. Spawns are fixed per arena. The only points of randomness in the whole system are: coin flip for who acts first at match start, the 3-perk offering shuffled per draft, the arena selection per round, the `Chest` pickup rolling its single-use item on open, and the hash-seeded cosmetic variation in terrain tiles (purely visual — does not affect gameplay).
-
-**Placeholder art until §M6.** Until the full gameplay loop (lobby → class select → match with turns, classes, fog, terrain → results) works end to end with colored primitives, no pixel art work begins. Gameplay correctness precedes visual polish, always.
-
-**One AI agent per file at a time.** Parallel lanes on the same file produce silent regressions and duplicate implementations. Fernando assigns work serially. Don't edit a file that's already on someone else's open branch.
-
-**CI as the only merge gate.** `main` is protected. A PR merges only when three checks pass: `typecheck`, `test:unit`, `test:smoke`. `--no-verify`, `@ts-ignore`, and `any` escape hatches are banned in non-test code.
-
-**Thin branches, fast merges.** One branch per small feature. Three-day maximum before merge or close. Long-lived branches become cleanup sagas — don't.
-
-**Strict types, always.** `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`. Discriminated unions narrow at message boundaries, not with casts.
+Final Fantasy Tactics combat meets Slay the Spire's between-fight decisions, wearing Diablo I's palette. Browser-based, 1v1 online, matches 5–10 minutes.
 
 ---
 
-## 4. Non-Negotiables (design + process)
+## 2. The Masterpiece Benchmark
 
-Design locks: server-authoritative architecture, 5-energy turn economy, 30-second turn timer, sequential turns, fog of war, deterministic damage, the client/server shared types contract, the 8-player tournament with bot fill and inter-round perk drafts, the 3-class roster (Ashen Knight, Pale Mage, Heretic) with their full 3-ability kits, the 16-perk pool, the 5 arena archetypes, the Coward's Brand surrender mechanic, the FFT/Diablo I visual target.
+DCT's ambition is not "ship a working tactical game." The ambition is **FFT-quality** — the thing a streamer screenshots and a judge remembers. Nothing in this spec is graded on "does it function." Everything is graded on "does it feel like FFT."
 
-Process locks: the repo lives outside any cloud-sync folder (OneDrive, Dropbox, iCloud). The scene hierarchy is `src/client/scenes/` only — no parallel `screens/` folder. Sprites live in `public/sprites/` only — no duplicate folder elsewhere. One canonical copy of every shared helper (`manhattanDistance`, `isInBounds`, etc.) in `src/shared/`. Build-tool timestamp files (`vite.config.ts.timestamp-*.mjs`, etc.) stay gitignored.
+That gives us four pillars and five hero moments. The pillars are what the game *is*; the hero moments are where it *proves* it.
+
+### 2.1 The Pillars
+
+**Every energy point is a decision.** Five energy per turn, no carry-over, use-or-lose. No filler turns. The player feels the tension of every spend.
+
+**Information is power.** Fog of war is not decoration. Scouting costs. Traps hide in the dark. The Heretic class is built around lying to the opponent with fog. Taking information from your opponent matters as much as taking HP.
+
+**Dark, heavy, oppressive atmosphere.** Ash and blood. Flickering torchlight. Diablo I palette, FFT silhouette, Dark Souls weight. Never cheerful, never saturated, never cute.
+
+**Readable at a glance.** The art is dark but the game state must be crystal clear. Every champion reads at solid-black silhouette. Every tile type is unambiguous. Every ability has a telegraph.
+
+### 2.2 The Hero Moments
+
+These are the five frames a judge, streamer, or first-time player will screenshot. Disproportionate polish lives here.
+
+1. **Title reveal.** The logo looks like it was forged, not typed.
+2. **Bracket view.** Eight portraits, some cracked. The "who are the Dark Council" reveal.
+3. **Perk draft.** Three cards side-by-side. The roguelite identity beat — every run starts here.
+4. **The Kneel.** A player chose shame. Make the collapse sell it.
+5. **Match-end victory.** Winner over loser's corpse on a desaturated grid.
+
+If an asset or mechanic makes a hero moment feel weaker, it fails the bar no matter what the tests say. Corners get cut on mid-match idle frames, never on these five.
+
+### 2.3 What "shipped" means for v2.0
+
+Shipped at masterpiece quality means:
+
+- All M0–M13 milestones green in CI on `main`.
+- A non-developer opens the URL, lands in a match against a bot in under 30 seconds, completes a tournament in under 20 minutes, can articulate what they played.
+- All three classes balance to ±5% matchup win rates across playtest.
+- Fog of war *changes* engagements (not just: exists).
+- All 16 perks, 5 arenas, surrender animation, spectator mode functional.
+- **FFT-quality pixel art on all champion sprites (4 facings), terrain (height-stacked), VFX, portraits, HUD, logo.** No "programmer placeholder" anywhere in user-facing UI.
+- Rotatable camera with smooth 90° transitions.
+- Multi-height terrain with jump-stat-gated movement.
+- Audio (music, SFX, ambient) wired into every scene.
+- No `any`, no `@ts-ignore`, no TODO blockers in shipped code.
+
+If MVP slips, cut stretch first, then cut arenas (ship 3 instead of 5), then cut perks (ship 10 instead of 16). **Never cut:** class kits, fog of war, server authority, camera rotation, terrain height, 4-facing sprites. Those *are* the game.
 
 ---
 
-## 5. Tech Stack (locked)
+## 3. Audience & Jam Context
 
-Client runtime: PixiJS 8.x on HTML5 Canvas, TypeScript 5.x with `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`. Bundler: Vite. Dev port 3000.
+DCT ships for Vibe Jam 2026, a competitive browser-game showcase. That defines almost every scope constraint.
 
-Server runtime: Node 20+, `ws` WebSocket library, TypeScript 5.x with the same strictness. Dev runner: `tsx`. Production: `tsc` build then `node dist/server/index.js`. Port 8080.
+**Players.** Tactics-game fans, FFT-likers, streamers looking for something with visual identity. Not casual mobile players. The game asks for five minutes of attention and a willingness to learn energy-as-budget.
 
-Testing: Vitest for unit tests (pure logic in `src/shared` and `src/server`). Playwright for smoke tests (end-to-end two-browser flow). Smoke tests are required, not optional. Fixtures for deterministic server state.
+**Session.** Browser-native. Cold-open in an incognito window, in a match within 30 seconds, tournament done in 20 minutes. No install, no account. A shareable URL is the unit of distribution.
 
-CI: GitHub Actions. One workflow, three jobs: `typecheck`, `test:unit`, `test:smoke`. All three block merge. Smoke test boots the real server and runs Playwright against it.
+**Scale.** 1v1 combat. 8-player single-elimination tournament as the meta loop. Not 2v2, not battle royale, not 4-player guild raid.
 
-Linting: ESLint with `@typescript-eslint/strict-type-checked` (preset). Explicit rules on top of that preset: `@typescript-eslint/no-explicit-any: error` (non-test code), `@typescript-eslint/ban-ts-comment: error` (blocks `@ts-ignore` and `@ts-expect-error` without description), `@typescript-eslint/switch-exhaustiveness-check: error` (for discriminated unions like `ClientMessage` / `ServerMessage` / `GameAction`), `@typescript-eslint/no-unnecessary-condition: warn`. Prettier for formatting.
+**Depth.** Three classes × three abilities × sixteen perks × five arenas gives the combinatorial depth for repeat play without drowning a first-timer. Adding classes/perks/arenas is a post-jam problem.
 
-Package manager: npm. No yarn, no pnpm, no bun.
+**Platforms.** Desktop browser first (Chrome/Firefox/Safari). Mouse + keyboard (Q/E for camera rotation, 1–3 for abilities). Mobile/touch is post-jam.
 
-Asset pipeline: Aseprite for pixel-art editing and animation export. PixelLab (or similar AI sprite tool) for initial silhouette generation only — every sprite goes through Aseprite before shipping. Music: Beatoven.ai for ambient game-dev tracks. SFX: SoundsGen or Freesound.org under permissive licenses.
-
-Deployment: Render or Railway for the server, static hosting (Netlify / Vercel / Cloudflare Pages) for the client bundle. Only when gameplay is solid.
-
-**npm scripts (locked names — CI and docs reference these):**
-
-| Script | What it runs |
-|--------|--------------|
-| `npm run dev` | Client (Vite on :3000) + server (tsx on :8080) in parallel via `concurrently`. |
-| `npm run dev:client` | Vite only. |
-| `npm run dev:server` | `tsx watch src/server/index.ts` only. |
-| `npm run build` | `tsc -p tsconfig.server.json && vite build`. Server → `dist/server`, client → `dist/client`. |
-| `npm run start` | `node dist/server/index.js`. Production server entry. |
-| `npm run typecheck` | `tsc --noEmit` against root tsconfig. CI gate #1. |
-| `npm run test:unit` | Vitest against `tests/unit/`. CI gate #2. |
-| `npm run test:smoke` | Playwright against `tests/smoke/`, boots server automatically. CI gate #3. |
-| `npm run lint` | ESLint over `src/` and `tests/`. |
-| `npm run format` | Prettier write. |
-
-If a script doesn't exist, add it — don't invent a new name. The three gate scripts (`typecheck`, `test:unit`, `test:smoke`) are sacred; renaming them means renaming them in CI too.
+Anything that forces scope outside these bounds — asynchronous play, accounts, custom lobbies, mods, social — is out of scope for v2.0.
 
 ---
 
-## 6. Repo Structure
+# Part II — How It Plays
+
+## 4. Core Loop
+
+The player journey, from URL-open to back-at-URL:
 
 ```
-.
-├── .github/
-│   └── workflows/
-│       └── ci.yml                # typecheck + unit + smoke, all required
-├── .gitignore                    # node_modules, dist, vite.config.ts.timestamp-*, .env, .DS_Store
-├── public/
-│   ├── sprites/                  # The only sprite folder. Do not create a second one.
-│   └── audio/
-├── index.html                    # Vite entry — must live at project root.
-├── src/
-│   ├── shared/                   # Client + server import from here only.
-│   │   ├── types.ts              # Single source of truth for all contracts.
-│   │   ├── constants.ts          # Every game number. No inline magic values.
-│   │   ├── grid.ts               # manhattanDistance, isInBounds, positionKey, lineOfSight.
-│   │   └── index.ts              # Barrel export.
-│   ├── server/
-│   │   ├── index.ts              # ws server, connection handling, routing.
-│   │   ├── GameEngine.ts         # Pure game logic. Testable without ws.
-│   │   ├── TournamentManager.ts  # Bracket state, bot fill, perk draft orchestration.
-│   │   ├── BotAI.ts              # Deterministic bot opponent.
-│   │   ├── Fog.ts                # Per-player state filtering.
-│   │   ├── validators.ts         # Pure action validation. Called by engine.
-│   │   └── arenas/               # Arena definitions (data, not code).
-│   │       ├── pit.ts
-│   │       ├── ruins.ts
-│   │       ├── bridge.ts
-│   │       ├── shrine.ts
-│   │       └── maze.ts
-│   └── client/
-│       ├── main.ts               # Entry. Bootstraps PixiJS app + network.
-│       ├── network.ts            # ws client, reconnect, message routing.
-│       ├── Renderer.ts           # Single renderer class. No sub-renderers.
-│       ├── SceneManager.ts       # Scene lifecycle, transitions.
-│       ├── scenes/               # The ONLY scene hierarchy. No screens/.
-│       │   ├── TitleScene.ts
-│       │   ├── LobbyScene.ts
-│       │   ├── MatchScene.ts
-│       │   ├── PerkDraftScene.ts
-│       │   ├── BracketScene.ts
-│       │   ├── ResultsScene.ts
-│       │   └── SpectatorScene.ts
-│       ├── input/
-│       │   └── InputHandler.ts
-│       ├── ui/
-│       │   └── HUD.ts
-│       └── audio/
-│           └── SoundManager.ts
-├── tests/
-│   ├── unit/                     # Vitest. Pure logic only.
-│   └── smoke/                    # Playwright. Lobby → match → action.
-├── SPEC.md                       # This file. The only design doc.
-├── README.md                     # Setup + run instructions only. No design content.
-├── tsconfig.json
-├── package.json
-└── vite.config.ts
+URL
+  → TitleScene           — cold-open branding, "join tournament" button
+  → LobbyScene           — name entry, class select, pairing wait
+  → MatchScene           — 1v1 combat, turn by turn
+  → ResultsScene         — win/loss card, brief animation
+  → PerkDraftScene       — winners only, 3-card pick
+  → BracketScene         — current standings, next match teaser
+  → MatchScene (next)    — repeat until tournament ends
+  → ResultsScene (final) — tournament conclusion
+  → TitleScene
 ```
 
-`index.html` lives at the project root per Vite convention; `public/` holds static assets only (sprites, audio).
+**Losers branch** off `ResultsScene` to `SpectatorScene` after their elimination. They can watch any in-progress match as a read-only state stream until the tournament ends, then return to `TitleScene`.
 
-Anything not in this tree needs a PR conversation about why it exists. If you want a new top-level markdown doc, the answer is usually "put it in the PR description instead."
+Every scene has exactly one responsibility. Transitions go through `SceneManager`. The server drives when scenes change — client cannot self-promote to a later scene without a server message (`matchStart`, `matchOver`, `tournamentUpdate`, `perkOptions`).
 
----
-
-## 7. Build Order — Milestones
-
-Each milestone is a gate. You do not start the next one until the current one's smoke test is green on `main`. Every milestone has an explicit Definition of Done and a smoke check.
-
-**M0 — Skeleton.** Repo initialized, strict tsconfig, Vite + tsx running, ESLint + Prettier wired, GitHub Actions CI running typecheck + empty unit + smoke-boot on every PR, `main` branch protected. Server accepts a WS connection and sends `{ type: "hello", serverVersion }`. Client connects and logs it. **Smoke:** `npm run dev` → browser → console shows server hello. **Artifact:** green CI badge on first PR.
-
-**M1 — Grid and units.** Server holds an 8×8 grid and two connected players, each with one unit at mirrored spawn positions (1,4) and (6,3). Client renders the grid as an isometric diamond of colored 64×32 diamond tiles and the two units as colored circles with a letter label. No sprites, no animation, no real terrain. **Smoke:** two browser tabs both see the same grid and both units.
-
-**M2 — Move action, energy, turn order.** Click a tile. Client sends `{ type: "action", action: { kind: "move", to } }`. Server validates (tile in range, on grid, not occupied, not impassable, enough energy), applies, broadcasts authoritative state. Movement is orthogonal only (no diagonals), 1 energy per tile. Energy refreshes to 5 at turn start. Turn order: coin flip at match start, then alternating. **Smoke:** two tabs, player A moves, player B sees it within 200ms, player A cannot move more than 5 tiles in one turn, player B cannot move during A's turn.
-
-**M3 — Attack, HP, death, match-end.** Basic attack action (2 energy). Adjacent tiles for melee, class-ranged for ranged once classes ship. Fixed damage by class. Units have HP, die at 0, are removed. Match ends when one side has no living units. `ResultsScene` shows winner. **Smoke:** attack reduces HP, death ends match, both clients transition to ResultsScene.
-
-**M4 — Turn timer + full turn loop.** 30-second turn timer, auto-end on timeout, remaining energy is forfeited. `EndTurn` action (0 energy) lets player end turn early. Timer visible in HUD. **Smoke:** a full match plays end-to-end across two tabs with no page refresh, timer counts down, timeout ends turn.
-
-**M5 — Three classes with full 3-ability kits.** Ashen Knight, Pale Mage, Heretic. Stats and abilities exactly as specified in §13. `LobbyScene` lets each player pick a class before match start. `Defend` and `Wait` actions added. **Smoke:** all nine matchups (incl. mirrors) playable without crashes; each ability's effect is visible and validated server-side.
-
-**M6 — Fog of war + Scout.** Server filters `MatchState` per player based on unit sight (2-tile radius by default, class-modified). Client renders fogged tiles as dark overlay. Terrain always visible; enemy positions only visible when in sight. "Last known state" ghosts: when an enemy leaves sight, render a faded marker where they were last seen. `Scout` action (1 energy): reveal a 3×3 area anywhere on the map for the current player, for 1 turn. **Smoke:** player A cannot see player B outside sight range; Scout reveals B; moving out re-fogs; ghost marker appears on last-seen tile.
-
-**M7 — Full terrain + battlefield pickups.** All seven terrain types (§10) implemented with their mechanics. Four pickup types (§16) spawn per arena. Pickup action (1 energy) grabs item on current tile. **Smoke:** high ground costs 2 energy to enter, hazards do 1 dmg/turn, pillars block LoS for attacks and Scout, shadow tiles grant untargetability, pickups grant their effects.
-
-**M8 — FFT-quality terrain textures.** Replace colored diamond tiles with the textured pixel-art tiles specified in §21. Hand-crafted or Aseprite-exported 64×32 diamond textures for each terrain type with the visual details (mortar, moss, grass, ember, veins) called out. `image-rendering: pixelated` locked down, `SCALE_MODES.NEAREST`, sub-pixel positions rounded at render. **Smoke:** all seven terrain types visually distinguishable at a glance on the live grid, pixels are crisp at every zoom level.
-
-**M9 — FFT-quality champion sprites and ability VFX.** Replace colored circles with full sprite sheets per §22. Each champion ships idle (4 frames), walk (6 frames), attack (5 frames), hit (3 frames), death (4 frames), defend (2 frames), cast/channel (4 frames). Ability VFX sprites per §22.4. Damage numbers with scale-punch animation. **Smoke:** all three champions animated correctly across all state transitions; ability casts show telegraph + impact VFX.
-
-**M10 — Tournament bracket + bot fill + perk draft.** 8-player single-elimination, fixed bracket size. `TournamentManager` pairs players, advances winners, handles losses. Bot fills empty slots after a 15-second matchmaking wait — the bracket is always exactly 8 entrants before round 1 begins (no byes, no odd-round reseeding). Seeding within the bracket is randomized per tournament. `BracketScene` shows current standings. Perk draft between rounds: winner picks 1 of 3 perks, lasts the next round only, no stacking. All 16 perks from §14 implemented. Losing players route to `SpectatorScene` (M12) — for now they just see a "you were eliminated" card. **Smoke:** full 8-player tournament runs to completion with mixed humans and bots, perks visibly modify next match.
-
-**M11 — Five arenas + map rotation.** All five arena archetypes (§15) built out as terrain layouts with fixed pickup slots (random which pickups). Random arena selected per round. **Smoke:** across a full tournament, at least 3 different arenas appear; each arena plays distinctly (ranged-favoring, melee-favoring, etc.).
-
-**M12 — Surrender + spectator mode.** `Kneel` action (surrender): 3-second dramatic pause, bell-toll cue, match ends, winner portrait next to a cracked-portrait effect on the surrenderer in bracket. Eliminated players land on `SpectatorScene` and can watch any in-progress match (read-only state stream). **Smoke:** surrender triggers the sequence, spectator can watch a live match end-to-end.
-
-**M13 — Audio, polish, submission.** Music tracks per §24 wired into scenes, SFX on every action, ambient wind in match scenes. Final HUD pass: portraits, energy pips, turn banner, status icons. Title screen, main menu, post-tournament stats screen. Deploy. **Smoke:** cold-open in an incognito browser, complete full tournament, hear audio, see end credits.
-
-Nothing ships beyond M13 before submission. Post-submission items go into a separate file.
+Scenes live in `src/client/scenes/` (see §11). That is the ONLY scene hierarchy. No `screens/` folder, no ad-hoc state machines bolted onto `MatchScene`.
 
 ---
 
-## 8. Combat System
+## 5. Match Anatomy
 
-### 8.1 Turn Structure
+The rulebook for a single match. Values are targets for tuning; see §10 Contracts for the enforcing types and §13 Workflow for how changes land.
 
-Sequential turns, alternating. Player A acts → Player B acts → repeat. Why not simultaneous: simultaneous resolution requires a conflict-resolution engine, makes fog-of-war edge cases brutal, and makes spectating confusing. Sequential matches FFT and Into the Breach and lets players react to their opponent.
+### 5.1 Turn Structure
 
-Turn start: energy refreshes to 5 (or 6 with Energy Surge perk). Turn timer: 30 seconds. If the timer expires, the player forfeits remaining energy, turn auto-ends.
+Sequential turns, alternating. Player A acts → Player B acts → repeat. Why not simultaneous: simultaneous resolution requires a conflict engine, breaks fog-of-war cleanly, and makes spectating confusing. Sequential matches FFT and Into the Breach and lets players react.
 
-Turn end conditions: `EndTurn` action voluntarily, or timer expiry, or the player runs out of energy and has no 0-cost actions available (auto-end heuristic is optional — explicit is fine).
+Turn start: energy refreshes to 5 (or 6 with Energy Surge). Turn timer: 30 seconds. If the timer expires, remaining energy is forfeited and the turn auto-ends.
 
-### 8.2 Energy
+Turn end: `EndTurn` action voluntarily, timer expiry, or auto-end when out of energy with no 0-cost actions available.
+
+### 5.2 Energy Economy
 
 Five energy per turn. Does not carry over. Use it or lose it. The tension is real: moving 3 tiles plus attacking costs 5, leaving nothing for defend/scout. Every turn is a budget decision.
 
-### 8.3 Action Table
+### 5.3 Action Catalog
 
 | Action | Cost | Description |
 |--------|------|-------------|
-| `Move` | 1 per tile (2 for difficult terrain, 2 to climb onto high ground) | Orthogonal only. No diagonals. Blocked by impassable tiles and enemy-occupied tiles. |
-| `Attack` | 2 | Deal class damage to target. Melee: adjacent. Ranged: within class attack range, requires line of sight (LoS). |
-| `Defend` | 1 | Reduce all incoming damage by 50% until your next turn. Stacks with terrain cover (multiplicative). |
-| `Scout` | 1 | Reveal a 3×3 area anywhere on the map. Revealed tiles stay visible until the start of your *next* turn. |
-| `Ability` | 2–4 (class-defined) | Use one of your class's three abilities. Costs and effects per §13. |
+| `Move` | 1/tile (2 for difficult terrain; 2 to climb onto High Ground; **jump-gated by Δheight, v2**) | Orthogonal only, no diagonals. Blocked by impassable tiles, enemy-occupied tiles, and `|Δh|` exceeding the walker's `jump`. |
+| `Attack` | 2 | Deal class damage. Melee: adjacent AND `|Δh| ≤ 1`. Ranged: within class attack range, requires LoS (now 3D-aware per §6.3). |
+| `Defend` | 1 | Reduce incoming damage 50% until your next turn. Stacks with cover multiplicatively. |
+| `Scout` | 1 | Reveal a 3×3 area anywhere on the map. Tiles stay revealed until your next turn start. |
+| `Ability` | 2–4 (class-defined) | Use one of your class's three abilities. Costs and effects per §7. |
 | `UsePickup` | 1 | Consume the pickup on your current tile. Must be standing on it. |
-| `Kneel` | 0 | Surrender. Triggers the Coward's Brand sequence (§17). One-way. |
-| `EndTurn` / `Wait` | 0 | End turn voluntarily. No benefit, no penalty. |
+| `Kneel` | 0 | Surrender. Triggers the Coward's Brand sequence (§8.5). One-way. |
+| `EndTurn` / `Wait` | 0 | End turn voluntarily. |
 
-Multiple actions per turn in any order as long as energy allows. No limit on action count, only energy.
+Multiple actions per turn in any order as long as energy allows. No per-action count limit, only energy.
 
-### 8.4 Damage and Health
+### 5.4 Damage & Health
 
-All damage is deterministic. If you're in range and have LoS, the hit lands. Damage values are fixed per ability. Cover (terrain Rubble or a defend action) reduces incoming damage; the two stack multiplicatively. No crit, no miss, no dodge chance.
+All damage is deterministic. If you're in range and have LoS, the hit lands. Cover (Rubble, Defend) reduces incoming damage multiplicatively. No crit, no miss, no dodge chance.
 
 Base HP per class: Ashen Knight 24, Heretic 20, Pale Mage 16. Death at 0 HP removes the unit.
 
-No natural healing. Healing comes from: Heretic's Desecrate (1 HP/turn on corrupted tile), Health Flask pickup (5 HP), Second Wind perk (4 HP at round start), Vampiric Touch perk (1 HP per successful attack). All healing is clamped to `maxHp`; excess is lost.
+No natural healing. Healing sources are named and limited: Heretic's Desecrate (+1 HP/turn on own corrupted tile), Health Flask pickup (+5 HP), Second Wind perk (+4 HP at round start), Vampiric Touch perk (+1 HP per successful attack). All healing clamps to `maxHp`; excess is lost.
 
-### 8.5 Combat Rules Clarifications
+Example calc: Knight attack (5 damage) on a Mage standing on Rubble (–15%) with Defend active (–50%): `5 × 0.85 × 0.5 = 2.125 → 2`. Rounding: half-up, minimum 1 on any direct attack that lands. DoT ticks (hazards, Corrupted) bypass the floor — always deal their listed value.
 
-These are the edge cases every class and ability needs to agree on. They live here, not buried in §13, so validators and bot AI can reference one source.
+### 5.5 Combat Edge Cases
 
-**Line of sight (LoS).** Bresenham line from the *center* of the attacker's tile to the *center* of the target's tile. A line is blocked if any tile it passes through (other than the endpoints) has `type === "pillar" | "wall"` or is currently under an Ash Cloud overlay. Shadow tiles do *not* block LoS. LoS is symmetric: if A can see B, B can see A. LoS also gates fog-of-war vision (see §11).
+These clarifications live here so validators, bot AI, and the renderer all reference one source.
 
-**Path validation.** `Move` actions submit a `path: Position[]` (the sequence of tiles walked, not including the start). Client computes the path for UI preview (e.g. A*) and sends it; server re-validates every step: in bounds, passable, not enemy-occupied, each step orthogonal and adjacent to the previous, total cost (including difficult-terrain and high-ground surcharges) ≤ available energy. If any step fails, the whole action rejects with `actionResult { ok: false }` and no partial movement occurs.
+**Line of sight (3D-aware, v2).** Bresenham line from the *center* of the attacker's tile top-surface (at attacker height) to the *center* of the target's tile top-surface (at target height). A line is blocked if any tile column it passes through (other than the endpoints) has a top-surface height ≥ the line's height at that column, OR the column holds a `pillar`/`wall` (treated as infinite blocking height regardless of its stack), OR it's currently under an Ash Cloud overlay. Shadow tiles do *not* block LoS. LoS is symmetric: if A can see B, B can see A.
+
+**Height & jump (v2).** See §6.3.
+
+**Path validation.** `Move` actions submit `path: Position[]` (tiles walked, not including start). Client computes the path for UI preview (A*) and sends it; server re-validates every step: in bounds, passable, not enemy-occupied, each step orthogonal and adjacent to the previous, `|Δh| ≤ walker.jump` (free if ≤ 1), total cost ≤ available energy. Any step fails → whole action rejects with `actionResult { ok: false }`, no partial movement.
 
 **Action → state ordering.** Server emits, in order: `actionResult { ok: true, eventId }` to the acting player, then `stateUpdate` to both players (fog-filtered). Clients must not render an action as resolved until the subsequent `stateUpdate` arrives. `eventId` correlates the two so animations don't double-fire.
 
-**Rounding and minimums.** Damage rounds half-up. Direct attacks have a minimum of 1 damage after all reductions. DoT ticks (hazards, Corrupted) bypass the floor — they always deal their listed value, not a minimum-1.
+**Rounding and minimums.** Damage rounds half-up. Direct attacks have a minimum of 1 damage after reductions. DoT ticks bypass the floor.
 
-**Ability targeting defaults.** Unless stated otherwise, abilities targeting a tile require LoS from the caster to the target tile; abilities targeting a unit require LoS to that unit. Exceptions are called out per-ability below.
+**Ability targeting defaults.** Unless stated otherwise, abilities targeting a tile require LoS from the caster to the target tile; abilities targeting a unit require LoS to that unit. Exceptions called out per-ability in §7.
 
-### 8.6 Turn-Start Resolution Order
+### 5.6 Turn-Start Resolution Order
 
-Every server tick at turn start resolves effects in a fixed order, then hands the turn to the next player. Without a fixed order you get nondeterministic deaths. The order:
+Every server tick at turn start resolves effects in a fixed order, then hands the turn to the next player. Without a fixed order you get nondeterministic deaths.
 
-1. Decrement TTLs on all Statuses, Ash Clouds, Corrupted tiles, and Hex Trap "revealed" markers belonging to the player whose turn just *ended*. Expired effects are removed before any DoT applies.
+1. Decrement TTLs on all Statuses, Ash Clouds, Corrupted tiles, and Hex Trap `revealed` markers belonging to the player whose turn just ended. Expired effects removed before any DoT applies.
 2. Apply hazard DoT (1 damage) to any unit standing on a hazard tile, in unit-id order.
 3. Apply Ash Cloud DoT (1 damage) to any unit standing on an active Ash Cloud tile.
-4. Apply Corrupted-tile effects: 2 damage to non-Heretic units, +1 HP to the Heretic if the Heretic is standing on a Corrupted tile they own.
+4. Apply Corrupted-tile effects: 2 damage to non-Heretic units, +1 HP to the Heretic if standing on their own Corrupted tile.
 5. Apply Vampiric Touch / Second Wind / round-start perk effects scoped to the new turn.
-6. Check for match-end conditions (§8.7). If the match is over, broadcast `matchOver` and do not start the next turn.
-7. If the match continues: refresh `currentTurn`'s energy, clear `blood_tithe_used`, increment `turnNumber`, set `turnEndsAt`, broadcast `turnStart` and the fresh fog-filtered `stateUpdate`.
+6. Check match-end (§5.7). If over, broadcast `matchOver` and do not start the next turn.
+7. Otherwise: refresh `currentTurn`'s energy, clear `blood_tithe_used`, increment `turnNumber`, set `turnEndsAt`, broadcast `turnStart` and a fresh fog-filtered `stateUpdate`.
 
-This sequence is the same whether the prior turn ended via `EndTurn`, timer expiry, or auto-end. Bots execute on the same tick as humans.
+Identical sequence whether the prior turn ended via `EndTurn`, timer expiry, or auto-end. Bots execute on the same tick as humans.
 
-### 8.7 Match-End Resolution
+### 5.7 Match-End
 
-A match ends the moment any of these conditions become true; checks happen after every state-changing event (action, DoT tick, surrender):
+A match ends the moment any condition is true; checks happen after every state-changing event (action, DoT tick, surrender):
 
 - **Knockout.** One player has zero living units. Surviving player wins.
-- **Double-KO.** Both players have zero living units in the same tick (e.g. Vanguard Charge + push into a hazard finishes the only Heretic while the Knight is finished by simultaneous hazard DoT). The player whose action *caused* the tick *loses* — self-elimination is a loss. If both players were eliminated by passive effects on the same tick (DoT only, neither acting), the player whose turn was *not* in progress wins (the active player "walked into it"). If still ambiguous (impossible under current rules but reserved): the player with higher remaining HP at the start of the tick wins; ties → coin flip on the match seed.
+- **Double-KO.** Both players reach zero in the same tick. The player whose action *caused* the tick *loses* (self-elimination is a loss). If both eliminated by passive effects on the same tick (DoT only, neither acting), the player whose turn was *not* in progress wins. If still ambiguous (reserved): higher remaining HP at tick start wins; ties → match-seed coin flip.
 - **Surrender.** `Kneel` action. The kneeler loses regardless of HP.
-- **Forfeit.** Reconnect grace expired or repeated invalid-action spam beyond the rate limit (>50 rejected actions in 10s) → forfeit.
-- **No-units-spawned bug fallback.** If somehow a match starts with one or both players having zero units, the server logs an error and aborts the match with a `bug` outcome (no winner advances; the bracket re-pairs survivors).
+- **Forfeit.** Reconnect grace expired or >50 rejected actions in 10s.
+- **No-units-spawned bug fallback.** Server logs and aborts with a `bug` outcome.
 
-`matchOver` payload includes `{ winner, final, surrender?, cause: "knockout" | "surrender" | "forfeit" | "double_ko" | "bug" }`. The client picks animation and audio based on `cause`.
+`matchOver` payload: `{ winner, final, surrender?, cause: "knockout" | "surrender" | "forfeit" | "double_ko" | "bug" }`. Client picks animation and audio by `cause`.
 
 ---
 
-## 9. Grid
+## 6. The World
 
-8×8 isometric. Coordinate system: `{x: 0..7, y: 0..7}`, origin at the top corner of the diamond. Tiles rendered as 64×32 diamond top face with visible depth (side faces, per §21). Units stand on top, anchored center-bottom.
+The 8×8 grid, its materials, its vertical dimension, its visibility, and the camera that views it. This is the biggest structural change from v1.4.
+
+### 6.1 Grid
+
+8×8 isometric. Coordinate system: `{ x: 0..7, y: 0..7 }`, origin at the top corner of the diamond. Tiles rendered as 64×32 diamond top face with visible side-face depth (per §14).
 
 Spawn: mirrored across the vertical axis. A fixed pair of spawn positions per arena, same for both players rotated 180°. Fair, deterministic.
 
+### 6.2 Terrain Types
+
+Seven gameplay categories (Stone, High Ground, Rubble, Hazard, Pillar/Wall, Shadow, Corrupted). Hazard has three visual variants (Fire / Acid / Void) with identical mechanics; Pillar/Wall are two impassable variants with identical mechanics but different silhouettes. That's why the `TerrainType` union in §10 has ten members. Ash Cloud is a *temporary overlay*, not a base terrain — tracked as a separate effect and drawn atop whatever terrain is beneath it.
+
+**Stone (default).** Normal movement, no modifiers.
+
+**High Ground.** Costs 2 energy to climb onto (not to leave). Unit on High Ground deals +25% damage when attacking a lower-elevation target (rounded down, min +1). Note: High Ground is a *terrain type* (material); tile `height` is orthogonal *topology* (§6.3). A Stone tile at height 3 is not automatically High Ground — but the "lower-elevation target" damage bonus applies based on actual height delta regardless of terrain type.
+
+**Rubble.** Difficult terrain: 2 energy to enter. Light cover: 15% damage reduction while standing on it (stacks with Defend multiplicatively).
+
+**Hazard.** Three variants, same mechanic: 1 damage/turn to any unit standing on a hazard tile at turn start. Knockback effects can push enemies onto hazards.
+
+**Pillar / Wall.** Impassable. Blocks LoS for ranged attacks *and* Scout. Primary LoS geometry. Contributes infinite blocking height to 3D LoS regardless of base stack height.
+
+**Shadow Tile.** A unit on a shadow tile is untargetable by direct single-target attacks. Area effects (Ash Cloud, Desecrate, hazard DoT) still damage. Shadow reveals when the occupant takes any action other than `EndTurn` / `Wait` / `Defend`, and stays revealed for the rest of their next turn. Shadow tiles do not block LoS — they conceal the *occupant*, not the *line*.
+
+**Corrupted.** Heretic-created via Desecrate. Deals 2 damage/turn to non-Heretic units standing on it; heals Heretic 1 HP/turn while standing. Duration: 3 turns, then reverts to `baseType`.
+
+### 6.3 Height & Jump (new in v2)
+
+FFT's signature. Tiles have a **stack height** in addition to a terrain type. Terrain type is *material* (what the tile is made of); height is *topology* (how tall the stack is). They are orthogonal — a height-3 Stone stack and a height-3 Corrupted stack are both height-3 but behave differently when you stand on them.
+
+**Representation.** `Tile.height: number`, integer, default 1. Height 0 is a pit (below default floor). Height 2+ is raised — a stone stack, a ledge, a parapet.
+
+**Movement rules.**
+
+| `|Δh|` (dest height − source height, absolute) | Rule |
+|----|------|
+| `≤ 1` | Move freely (subject to other tile costs). |
+| `> 1` | Move allowed only if walker's `jump` ≥ `|Δh|`. Otherwise rejected with `height_exceeds_jump`. |
+
+Energy cost for movement is **unchanged** by height — height gates the move, doesn't tax it. The existing +2-energy cost for climbing onto High Ground (terrain type) still applies on top when the destination is High Ground.
+
+**Per-class jump:** Knight `jump = 2`, Mage `jump = 3`, Heretic `jump = 3`. Knight is heavy plate and can't escape upward. Mage floats. Heretic is predatory.
+
+**Blink (Mage ability) ignores height.** Teleport resolves regardless of Δheight — the ability doesn't traverse the space.
+
+**Melee range.** Adjacent in grid AND `|Δh| ≤ 1`. You can slash one tile down from a ledge, not three.
+
+**Ranged attacks.** Traverse height freely if LoS holds. Arrows fly over terrain.
+
+**Default arena height.** All tiles default to height 1 unless the arena data overrides via the optional `heights` table (§10.1). Existing v1.4 arenas (§8.3) are flat height = 1 until authored with real topology.
+
+### 6.4 Fog of War
+
+Every player starts each turn with vision of the tiles around each of their units within their class's `sightRange` (Mage 3, Knight 2, Heretic 2). Vision uses Manhattan distance AND requires LoS — pillars, walls, and Ash Clouds block sight just as they block ranged attacks, and now height (§6.3) does too. Terrain layout itself is always visible; what's fogged is the presence and state of enemy units, pickups, and traps.
+
+Vision updates in real time during the player's turn. Moving a unit updates vision on every step. Scout reveals a 3×3 area anywhere on the map, ignoring LoS (Scout is magical insight, not a camera). Revealed tiles stay visible until your next turn start.
+
+**Last-known-state ghosts.** When an enemy leaves your sight, the last tile you saw them on shows a faded ghost marker — the champion sprite rendered with a PixiJS `ColorMatrixFilter` applied at runtime (grayscale + 0.35 alpha). There is no separate `_ghost.png` asset; don't ship one. The ghost stays until you either re-spot the enemy (ghost clears, new position shows) or scout the ghost's tile (confirms empty, ghost clears). This is what makes fog readable instead of frustrating.
+
+**Pickup memory.** Pickups are one-shot; once consumed they do not respawn. Pickups you've seen but are currently fogged render as faded icons at their last-known tile (same ColorMatrixFilter approach). If consumed while fogged, you learn it's gone only when you next have vision of that tile.
+
+**Server-side filtering.** Every `stateUpdate` is computed per-player on the server and stripped of fogged data before broadcast. Clients never receive enemy positions, trap positions, or unseen pickup states they shouldn't know. Bots receive fog-filtered state through the same filter — they are not given an omniscient view. Not optional; client-side fog is cheating.
+
+### 6.5 Camera Rotation (new in v2 — client-only)
+
+The FFT feature. The player can rotate the camera in 90° steps to see around pillars, ledges, and to cope with asymmetric arenas.
+
+**Four angles.** 0°, 90°, 180°, 270°. `Q` rotates counter-clockwise, `E` clockwise. Transition: 150ms ease-in-out tween. Input (clicks) is blocked during the tween.
+
+**Client-only.** Camera rotation does NOT change game state. The server does not know or care about client camera angle. Two clients viewing the same match may be at different rotations simultaneously. World-state (unit positions, fog, terrain) is identical regardless of angle — only the rendering changes.
+
+**What rotation affects.**
+
+- Which faces of a stacked tile are visible on-screen (camera-south and camera-east faces at any angle).
+- Which sprite a unit renders with, based on `unit.facing` rotated by the current camera angle (§6.6).
+- Which side of a pillar is between the camera and a unit behind it — so rotation can reveal a unit that was *visually* occluded at another angle. Fog of war (informational visibility) is unaffected.
+
+**What rotation does NOT affect.**
+
+- `sightRange`, `attackRange`, fog, LoS rules — all world-frame.
+- Tile coordinates and unit positions — always world-frame.
+- Input coordinates — clicks inverse-transform from screen space through current rotation to world-space before hitting game logic.
+
+**Implementation note.** One PNG per terrain type; the renderer applies a rotation transform to the scene graph root. Per-tile cosmetic detail (moss, cracks, embers) is hash-seeded on `(x, y, cameraRotation)` so adjacent tiles stay varied at any angle. ART_SPEC v2 codifies this.
+
+### 6.6 Unit Facing (new in v2 — server-authoritative)
+
+Each unit has a `facing: "N" | "E" | "S" | "W"` in world space. Tracked server-side because future mechanics (backstab, directional abilities) may depend on it; recording it now avoids a contract migration later even if it's unused at launch.
+
+**Setting facing.**
+
+- On `Move`: unit faces the direction of its final step.
+- On `Attack` / `Ability` targeting a specific unit or tile: unit faces that target before the animation plays.
+- On spawn: unit faces toward the grid center (rough rule: Player A spawn at (1,4) faces E, Player B spawn at (6,3) faces W).
+
+**Rendering.** Client picks the sprite based on `unit.facing` rotated by current `cameraRotation`. With 4 world facings × 4 camera angles = 16 effective orientations, reduced to 4 actual sprite assets (SE/SW/NE/NW camera-relative) because the rendering pipeline re-maps world-facing to camera-relative at draw time. ART_SPEC v2 codifies the four sprite variants.
+
+**Why 4-facing instead of mirrored pairs.** FFT authenticity requires preserving asymmetric gear across facings — the Knight's shield is on the left arm in world space, and mirroring an SE sprite to get SW puts the shield on the right arm. Wrong. Four hand-painted facings fix it.
+
 ---
 
-## 10. Terrain Types
+## 7. Units
 
-Seven gameplay categories (Stone, High Ground, Rubble, Hazard, Pillar/Wall, Shadow, Corrupted). Hazard has three visual variants with identical mechanics, and Pillar/Wall are two impassable variants with identical mechanics but different sprites — that's why the `TerrainType` union in §18 has ten members. All tiles have a base state; some tiles can be dynamically corrupted by the Heretic or covered by Ash Cloud.
+### 7.1 Per-Unit State
 
-Ash Cloud is a *temporary overlay*, not a base terrain type. It is tracked as a separate effect (see §13.2) and does not replace the underlying `TerrainType`. The renderer draws it on top of whatever terrain is beneath it.
+Each unit carries:
 
-**Stone (default).** Normal movement, no modifiers. Most of the arena.
+- `id`, `ownerId`, `classId`.
+- `pos: Position` — world x/y.
+- `facing: Facing` — N/E/S/W, server-authoritative (§6.6).
+- `hp`, `maxHp`.
+- `statuses: Status[]` — defending, shield_wall, iron_stance, revealed, stunned, blood_tithe_used.
 
-**High Ground.** Costs 2 energy to climb onto (not to leave). Unit on high ground deals +25% damage when attacking a lower-elevation target (rounded down, min +1). Defensive footing.
+Full schema in §10.
 
-**Rubble.** Difficult terrain: 2 energy to enter. Provides light cover: 15% damage reduction while standing on it (stacks with Defend multiplicatively).
+### 7.2 Classes
 
-**Hazard.** Three variants for flavor, same mechanic: 1 damage/turn to any unit standing on a hazard tile at turn start. Variants: Fire (orange ember), Acid (bubbling green), Void (swirling purple). Knockback effects can push enemies onto hazards.
+Three classes. Each has a complete 3-ability kit. Values are v1.4 starting points; tuning passes happen after M10 playtesting.
 
-**Pillar / Wall.** Impassable. Blocks line of sight for both ranged attacks *and* Scout. Walls and pillars are the primary LoS geometry.
-
-**Shadow Tile.** A unit on a shadow tile is untargetable by direct single-target attacks (enemy cannot pick them as an `Attack` / `Cinder Bolt` / `Hex Trap` target). Area effects (Ash Cloud DoT, Desecrate DoT, hazard DoT) still damage a unit standing on a shadow tile. The shadowed unit becomes visible and targetable for the rest of their next turn as soon as they take any action other than `EndTurn` / `Wait` / `Defend`. Shadow tiles do not block LoS — they conceal the *occupant*, not the *line*.
-
-**Corrupted.** Heretic-created via Desecrate ability. Deals 2 damage/turn to non-Heretic units standing on it. Heals the Heretic 1 HP/turn while standing on it. Duration: 3 turns, then reverts to its base terrain.
-
----
-
-## 11. Fog of War
-
-Every player starts each turn with vision of the tiles around each of their units within their class's sight range (Pale Mage 3, Ashen Knight 2, Heretic 2). Vision uses Manhattan distance *and* requires LoS — pillars, walls, and Ash Clouds block sight just as they block ranged attacks. Terrain layout itself is always visible (the shape of the map is known from match start); what's fogged is the presence and state of enemy units, pickups, and traps.
-
-Vision updates in real time during the player's turn. Moving a unit updates vision on every step. Scout action reveals a 3×3 area anywhere on the map, ignoring LoS (Scout is magical insight, not a camera). Revealed tiles stay visible until the start of your next turn.
-
-**Last-known-state ghosts.** When an enemy leaves your sight range, the last tile you saw them on shows a faded ghost marker — the champion sprite is rendered with a PixiJS `ColorMatrixFilter` applied at runtime (grayscale + 0.35 alpha). There is no separate `_ghost.png` asset; do not ship one. The ghost stays until you either re-spot the enemy somewhere else (ghost clears, new position shows) or scout the ghost's tile (confirms empty, ghost clears). This is what makes fog of war readable instead of frustrating.
-
-**Pickup memory.** Pickups are one-shot: once consumed they do not respawn for the rest of the match. Pickups you have seen before but are currently fogged render as faded icons at their last-known tile (same ColorMatrixFilter approach as ghost units). If a pickup is consumed while fogged from your perspective, you learn it's gone only when you next have vision of that tile.
-
-**Server-side filtering.** Every `stateUpdate` is computed per-player on the server and stripped of fogged data before broadcast. The client never receives enemy positions, trap positions, or unseen pickup states it shouldn't know. Bots receive fog-filtered state through the same filter — they are not given an omniscient view. This is not optional; client-side fog is cheating.
-
----
-
-## 12. Damage & HP
-
-All damage is deterministic. Fixed values per class and ability (§13). Cover and Defend are multiplicative damage reductions.
-
-Example calc: Knight attack (5 damage) on a Mage standing on Rubble (–15%) with Defend active (–50%): `5 × 0.85 × 0.5 = 2.125 → round to 2`. Rounding: standard rounding (halves round up), minimum 1 on any direct attack that lands (cover/defend cannot reduce below 1 damage).
-
-HP does not regenerate naturally. Healing sources are named and limited (§8.4).
-
----
-
-## 13. Classes
-
-Three classes. Each has a complete 3-ability kit. These values are the starting point; tuning passes happen after M10 playtesting.
-
-### 13.1 The Ashen Knight — Frontline Bruiser
+#### 7.2.1 The Ashen Knight — Frontline Bruiser
 
 **Identity:** Closes distance. Takes hits. Punishes anyone who gets close. The honest fighter — no tricks, just pressure.
 
@@ -350,19 +343,20 @@ Three classes. Each has a complete 3-ability kit. These values are the starting 
 | Move cost | 1 energy/tile |
 | Attack range | Melee (adjacent) |
 | Sight range | 2 tiles |
+| Jump (v2) | 2 |
 | Base attack damage | 5 |
 
 **Abilities:**
 
-*Shield Wall* — 1 energy. Take 50% reduced damage until your next turn AND reduce any forced movement (knockback, push) to 0. Cannot be combined with the basic Defend action on the same turn (they don't stack — whichever was used last is the active effect).
+*Shield Wall* — 1 energy. Take 50% reduced damage until your next turn AND reduce forced movement (knockback, push) to 0. Cannot be combined with basic Defend on the same turn (they don't stack — last used wins).
 
-*Vanguard Charge* — 3 energy. Move in a straight orthogonal line of up to 3 tiles. Stops early if the line hits an enemy, a pillar/wall, or the grid edge. On stopping against an enemy: deal 4 damage, push them 1 tile further in the charge direction. If the push destination is blocked (pillar, wall, grid edge, or another unit), the pushed target takes +2 bonus damage and does not move. Charging into a pillar or wall with no intervening enemy halts harmlessly on the last passable tile. Hazard and Corrupted tiles are valid line tiles (charge does not skip their on-enter effects for the Knight).
+*Vanguard Charge* — 3 energy. Move in a straight orthogonal line up to 3 tiles. Stops early at enemy, pillar/wall, or grid edge. On stop against enemy: 4 damage + push 1 tile further in the charge direction. If push destination is blocked (pillar, wall, grid edge, another unit, or a tile the pushed target can't enter due to its own jump), target takes +2 bonus damage and doesn't move. Charging into pillar/wall with no intervening enemy: halts harmlessly on last passable tile. Hazard/Corrupted tiles are valid line tiles — their on-enter effects still apply to the Knight.
 
-*Iron Stance* — 2 energy to toggle on, 0 energy to toggle off. Persists across turns until toggled off or the Knight dies (not consumed by taking a turn). While active: unmovable by forced movement, knockback effects are negated entirely, and every tile of your own movement costs 1 extra energy. Only one Iron Stance instance exists — re-casting while active does nothing.
+*Iron Stance* — 2 energy to toggle on, 0 to toggle off. Persists across turns until toggled off or the Knight dies. While active: unmovable by forced movement, knockback negated entirely, every tile of your own movement costs +1 energy. Only one instance exists — re-casting while active is a no-op.
 
-**Playstyle:** Get in the enemy's face and stay there. High HP means you can trade. Vanguard Charge closes gaps fast. Counterplay is kiting.
+**Playstyle:** Get in the enemy's face and stay there. High HP means you can trade. Vanguard Charge closes gaps fast. Counterplay is kiting and high ledges (Knight's `jump = 2` caps escape elevation).
 
-### 13.2 The Pale Mage — Ranged Glass Cannon
+#### 7.2.2 The Pale Mage — Ranged Glass Cannon
 
 **Identity:** Controls space with area damage and zone denial. Devastating at distance; fragile up close.
 
@@ -372,19 +366,20 @@ Three classes. Each has a complete 3-ability kit. These values are the starting 
 | Move cost | 1 energy/tile |
 | Attack range | 3 tiles (requires LoS) |
 | Sight range | 3 tiles |
+| Jump (v2) | 3 |
 | Base attack damage | 3 |
 
 **Abilities:**
 
-*Cinder Bolt* — 2 energy. Ranged attack, range 3, requires LoS. Deals 5 damage. Core tool for Mage damage output.
+*Cinder Bolt* — 2 energy. Ranged attack, range 3, requires LoS. Deals 5 damage. Core damage tool.
 
-*Ash Cloud* — 3 energy. Pick an anchor tile within range 3 (Manhattan distance, LoS required to the anchor); the cloud covers that tile and the 3 tiles to its right, down, and right-down (a fixed 2×2 footprint with the anchor in the top-left of the footprint). All four footprint tiles must be in bounds. Lasts 2 turns (ticks at the caster's next turn start, expires at the turn start after that). Blocks LoS through covered tiles for both players and for Scout. Any unit standing on an Ash Cloud tile at turn start takes 1 damage. Multiple Ash Clouds can exist; they do not stack damage on overlapping tiles.
+*Ash Cloud* — 3 energy. Pick an anchor tile within range 3 (Manhattan, LoS to anchor). Cloud covers anchor plus the three tiles to its right, down, and right-down (fixed 2×2 footprint, anchor top-left). All four in bounds. Lasts 2 turns. Blocks LoS through covered tiles for both players and Scout. Unit standing on Ash Cloud at turn start: 1 damage. Multiple clouds may coexist; damage does not stack on overlap.
 
-*Blink* — 2 energy. Teleport to any tile within range 2 (Manhattan). Must be in your current vision (non-fogged) and passable (not pillar, wall, impassable terrain, or occupied by another unit). Ignores pillars/walls as LoS blockers for the teleport itself (the Blink doesn't travel — it just resolves). Hazard and Corrupted tiles are valid destinations and their on-enter effects apply immediately.
+*Blink* — 2 energy. Teleport to any tile within range 2 (Manhattan). Must be in your current vision (non-fogged) and passable (not pillar/wall/impassable, not occupied). Ignores pillars/walls as LoS blockers for the teleport itself — the Blink doesn't travel, it just resolves. **Ignores height** (Δheight is not gated by `jump` for Blink). Hazard/Corrupted tiles are valid destinations; their on-enter effects apply immediately.
 
-**Playstyle:** Kite, zone with Ash Cloud, snipe with Cinder Bolt. 16 HP means two Knight swings and you're nearly dead. Blink is your lifeline.
+**Playstyle:** Kite, zone with Ash Cloud, snipe with Cinder Bolt. 16 HP = two Knight swings. Blink is your lifeline and the only way to cross a height gap bigger than 3.
 
-### 13.3 The Heretic — Blood Warlock Trickster
+#### 7.2.3 The Heretic — Blood Warlock Trickster
 
 **Identity:** Sacrifices HP for power. Lays traps in fog. Corrupts terrain. Plays mind games. The class built around fog of war as a weapon.
 
@@ -392,21 +387,22 @@ Three classes. Each has a complete 3-ability kit. These values are the starting 
 |------|-------|
 | HP | 20 |
 | Move cost | 1 energy/tile |
-| Attack range | 2 tiles (LoS not required at range ≤ 2 — attack ignores pillars/walls at point-blank) |
+| Attack range | 2 tiles (LoS not required at range ≤ 2 — ignores pillars/walls at point-blank) |
 | Sight range | 2 tiles |
+| Jump (v2) | 3 |
 | Base attack damage | 4 |
 
 **Abilities:**
 
-*Blood Tithe* — 0 energy, costs 4 HP. Gain +2 energy this turn. Once per turn. Cannot kill the Heretic: if current HP ≤ 4, the action is rejected (min 1 HP survivor rule). The defining mechanic — you can have 7-energy turns at the cost of your life. Used for explosive combos.
+*Blood Tithe* — 0 energy, costs 4 HP. Gain +2 energy this turn. Once per turn. Rejected if current HP ≤ 4 (`self_kill_prevented` — min 1 HP survivor rule). The defining mechanic: 7-energy turns at the cost of your life. Used for explosive combos.
 
-*Hex Trap* — 2 energy. Place an invisible trap on any tile within range 2 (Manhattan, LoS not required — same as the Heretic's attack). Legal target tiles must be: passable terrain (not pillar, wall, shadow, or hazard), empty of units, empty of pickups, and not already trapped. Traps are invisible to the opponent until triggered (fog-filtered out server-side). Trigger: enemy movement enters the trapped tile — deal 4 damage and apply `revealed` status. Revealed lasts 2 of the *victim's own* turn starts (visible through fog for the Heretic regardless of range). Max 2 traps per Heretic; placing a third removes the oldest automatically. Traps persist until triggered or the Heretic dies.
+*Hex Trap* — 2 energy. Place an invisible trap on any tile within range 2 (Manhattan, LoS not required — same as the Heretic's attack). Legal target tiles: passable terrain (not pillar/wall/shadow/hazard), empty of units, empty of pickups, not already trapped. Invisible to opponent until triggered (fog-filtered server-side). Trigger: enemy movement enters — 4 damage + apply `revealed` status (visible through fog for the Heretic for 2 of the victim's own turn starts, regardless of range). Max 2 traps per Heretic; placing a third removes the oldest. Traps persist until triggered or Heretic death.
 
-*Desecrate* — 3 energy. Corrupt a 2×2 area within range 2 (same anchor convention as Ash Cloud — the target tile plus its right/down/right-down neighbors, all four in bounds and not currently pillars/walls). Lasts 3 turns. Each affected tile stores its previous `TerrainType` in `baseType` and becomes `corrupted`; on expiry, reverts to `baseType`. Corrupted tiles deal 2 damage/turn to non-Heretic units at their turn start and heal the Heretic 1 HP/turn at the Heretic's turn start. Movement cost and on-enter effects are the Corrupted rules, not the `baseType` — Desecrate temporarily *replaces* the terrain, not overlays it. Corrupting a hazard tile suppresses its DoT for the duration (hazards heal the Heretic just like any corrupted tile). Corrupting high ground drops the +elevation bonus while corrupted.
+*Desecrate* — 3 energy. Corrupt a 2×2 area within range 2 (same anchor convention as Ash Cloud — target tile plus its right/down/right-down neighbors, all four in bounds and not pillars/walls). Lasts 3 turns. Each affected tile stores its previous `TerrainType` in `baseType` and becomes `corrupted`; reverts on expiry. Corrupted tiles deal 2 damage/turn to non-Heretic units at their turn start and heal the Heretic 1 HP/turn at the Heretic's turn start. Movement cost and on-enter effects follow Corrupted rules, not `baseType` — Desecrate *replaces* terrain for the duration. Corrupting a hazard tile suppresses its DoT (hazards heal the Heretic while corrupted). Corrupting High Ground drops the elevation bonus while corrupted.
 
-**Playstyle:** Lay traps in the fog. Force the enemy to scout (burning energy) or risk stepping on 4 damage. Use Blood Tithe turns for monster plays: Move + Hex Trap + Desecrate in one turn, paying 4 HP. Against a Knight you kite and trap. Against a Mage you corrupt terrain to heal through their poke and close distance with Blood Tithe-fueled movement.
+**Playstyle:** Lay traps in fog. Force the enemy to scout (burning energy) or risk stepping on 4-damage tiles. Use Blood Tithe turns for monster plays: Move + Hex Trap + Desecrate in one turn, paying 4 HP. Against Knight: kite and trap, use `jump = 3` to escape onto ledges. Against Mage: corrupt terrain to heal through poke.
 
-### 13.4 Class Balance Triangle
+### 7.3 Class Balance Triangle
 
 ```
          KNIGHT
@@ -421,19 +417,29 @@ Three classes. Each has a complete 3-ability kit. These values are the starting 
 
 Target matchup ratios, none worse than 55/45:
 
-- Knight vs Mage — Knight slight favorite (~55/45). Knight tanks Mage damage; Vanguard Charge closes gaps. Mage needs perfect Blinks and Ash Cloud zoning.
+- Knight vs Mage — Knight slight favorite (~55/45). Knight tanks Mage damage; Vanguard Charge closes gaps. Mage needs perfect Blinks and Ash Cloud zoning — height gaps favor the Mage (Blink bypasses them).
 - Mage vs Heretic — Mage slight favorite (~52/48). Range lets Mage scout-and-poke without walking into traps. Heretic's Desecrate healing can outlast the poke.
-- Knight vs Heretic — Heretic slight favorite (~52/48). Knight walks forward into traps; Blood Tithe matches Knight aggression. If Knight avoids traps and connects, Heretic's lower HP hurts.
+- Knight vs Heretic — Heretic slight favorite (~52/48). Knight walks forward into traps; Blood Tithe matches Knight aggression; Heretic can escape onto a height-3 ledge (`jump = 3`) that the Knight can't follow. If Knight avoids traps and connects, Heretic's lower HP hurts.
 
 Skill and perk choice matter more than class pick.
 
 ---
 
-## 14. Perks
+## 8. Meta Systems
 
-Between tournament rounds, each advancing player picks 1 of 3 randomly-drawn perks. Perks last for the NEXT ROUND ONLY — they do not stack across the tournament. Both upcoming-match players draft privately; opponent's perk is hidden until it matters mechanically (first activation).
+Everything outside a single match.
 
-**Full perk pool (16 perks; jam scope ships all of them):**
+### 8.1 Tournament
+
+8-player single-elimination, fixed bracket size — no byes, no odd-round reseeding. Seeding randomized per tournament. Bots fill empty slots after a 15-second matchmaking wait (`BOT_FILL_WAIT_MS`). Winners advance; losers route to §8.6 Spectator Mode.
+
+Between rounds: perk draft (§8.2).
+
+### 8.2 Perks
+
+Between tournament rounds, each advancing player picks 1 of 3 randomly-drawn perks. Perks last for the NEXT ROUND ONLY — they do not stack across the tournament. Both upcoming-match players draft privately; the opponent's perk is hidden until it matters mechanically (first activation).
+
+**Full perk pool (16; jam ships all):**
 
 | Perk | Effect | Category |
 |------|--------|----------|
@@ -451,34 +457,30 @@ Between tournament rounds, each advancing player picks 1 of 3 randomly-drawn per
 | Fortify | Defend blocks 75% instead of 50% | Defense |
 | Long Reach | +1 to your attack range (melee classes still require adjacency) | Offense |
 | Pillager | Using pickups costs 0 energy | Economy |
-| Counterspell | First enemy ability this round fizzles (no cost refunded to them) | Counter |
+| Counterspell | First enemy ability this round fizzles (no cost refunded) | Counter |
 | Vampiric Touch | Heal 1 HP per successful attack | Sustain |
 
-Design intent: perks let you adapt between rounds. Saw a trap-heavy Heretic? Pick Trap Sense. Facing a Knight? Ghost Step for kiting. Roguelite replayability without persistent progression; every tournament starts fresh.
+Intent: perks let you adapt between rounds. Saw a trap-heavy Heretic? Pick Trap Sense. Facing a Knight? Ghost Step for kiting. Roguelite replayability without persistent progression; every tournament starts fresh.
 
----
+### 8.3 Arenas
 
-## 15. Arenas
+Each tournament round uses a randomly-selected arena. Players don't know which until the round starts. Five archetypes ship at submission:
 
-Each tournament round uses a randomly-selected arena. Players don't know the arena until the round starts. Five archetypes ship at submission:
-
-*The Pit.* Open center, high ground rings the edges. Favors ranged. Sightlines are long; cover is in the corners.
+*The Pit.* Open center, High Ground rings the edges. Favors ranged. Sightlines are long; cover is in the corners.
 
 *The Ruins.* Dense pillars and rubble. Lots of cover, short sightlines. Favors melee and traps; the Heretic shines here.
 
 *The Bridge.* Narrow central corridor with hazards flanking the sides. Forces head-on engagement. Long-range classes get kited if they sit still.
 
-*The Shrine.* Symmetrical, one powerful pickup (Scroll of Sight) in the exact center. Risk/reward: whoever grabs it controls the map, but they walk into the middle.
+*The Shrine.* Symmetrical. One powerful pickup (Scroll of Sight) in the exact center. Risk/reward: whoever grabs it controls the map, but they walk into the middle.
 
 *The Maze.* Winding paths with shadow tiles throughout. Information warfare. The Heretic's home arena.
 
-Arena data (terrain layout, spawn positions, pickup spawn slots) lives in `src/server/arenas/*.ts` as pure-data exports. No arena-specific logic; the engine reads the data.
+Arena data (terrain layout, spawn positions, pickup spawn slots, and — new in v2 — optional per-tile `heights` overrides) lives in `src/server/arenas/*.ts` as pure-data exports. No arena-specific logic; the engine reads the data.
 
----
+### 8.4 Battlefield Pickups
 
-## 16. Battlefield Pickups
-
-One of each pickup type per map at match start. Positions are fixed per arena (defined in the arena data file), but which *chest* appears where is randomized. Pickups are hidden in fog until scouted or within sight. Pickup action costs 1 energy (0 with Pillager perk).
+One of each pickup type per map at match start. Positions are fixed per arena (defined in the arena data file), but which *chest* appears where is randomized. Pickups are hidden in fog until scouted or within sight. `UsePickup` costs 1 energy (0 with Pillager perk).
 
 | Pickup | Effect |
 |--------|--------|
@@ -489,46 +491,157 @@ One of each pickup type per map at match start. Positions are fixed per arena (d
 
 Pickups add a reason to explore the map rather than rushing the opponent.
 
----
-
-## 17. Surrender — The Coward's Brand
+### 8.5 Surrender — The Coward's Brand
 
 Surrender is not a quiet forfeit button. It is a moment.
 
-**How it works.** At any point during your turn, you can choose `Kneel`. Your champion drops to one knee, weapon dropped beside them (sprite: `kneel` animation, 4 frames, holds on last frame). A 3-second dramatic pause. Screen darkens to alpha 0.6. A single deep bell toll plays. Your opponent's champion takes one step forward and stands over you. The match ends. Banner appears: *"[Player] has yielded. The arena remembers."*
+**How it works.** At any point during your turn, you can choose `Kneel`. Your champion drops to one knee, weapon dropped beside them (`kneel` animation, 4 frames, holds on last frame). A 3-second dramatic pause. Screen darkens to alpha 0.6. A single deep bell toll plays. Your opponent's champion takes one step forward and stands over you. The match ends. Banner: *"[Player] has yielded. The arena remembers."*
 
-**The shame layer.** In the tournament bracket view, the surrenderer's portrait gets a cracked/shattered overlay visible to everyone in the tournament for the rest of the tournament. If spectators are watching the match, ghost spectators emit a slow-clap emote (post-jam polish; jam-scope: just the banner).
+**The shame layer.** In the tournament bracket view, the surrenderer's portrait gets a cracked/shattered overlay visible to everyone in the tournament for the rest of the tournament. If spectators are watching: slow-clap emote (post-jam polish; jam-scope is just the banner).
 
 **Why it matters.** Most games make surrender invisible. Making it theatrical means players think twice before quitting, surrenders are memorable for spectators, and the shame becomes a meme/badge (some will kneel on purpose for the effect). Psychological weight is the point.
 
+### 8.6 Spectator Mode
+
+Eliminated players route to `SpectatorScene` after `ResultsScene` and can watch any in-progress match as a read-only state stream (via `spectatorState` messages, full non-fog-filtered view under current design) until the tournament ends. Cannot interact. Chat/emotes are post-jam.
+
+### 8.7 Bot AI
+
+Bots are simple, deterministic, and fill brackets. They are not meant to be smart.
+
+**Decision tree per turn:**
+
+```
+while energy > 0 and a useful action is available:
+  if an enemy unit is in attack range and has line-of-sight:
+    attack
+  elif own HP below 30% and a retreat tile is available:
+    move toward nearest non-adjacent safe tile
+  elif enemy unit visible and not in attack range:
+    move one tile toward them (respecting jump)
+  elif enemy not visible and scout is available:
+    scout in the direction of their last known position (or centroid)
+  elif pickup visible and within 3 tiles:
+    move toward it
+  else:
+    endTurn
+
+Abilities: use at opportunity when energy and target are valid.
+  Knight → Vanguard Charge if it can close + damage.
+  Mage → Cinder Bolt at range, Blink to escape if adjacent, Ash Cloud on a choke.
+  Heretic → Blood Tithe for explosive close-out turns, Hex Trap on likely approach tiles, Desecrate on own position if being chased.
+```
+
+In v2, pathing respects `jump` — bots will not attempt illegal height transitions.
+
+One skill level ships M10–M13. Variable difficulty is post-jam.
+
+Bots use the same action validation path as humans. They are a player implementation, not a separate engine.
+
 ---
 
-## 18. Data Contracts
+# Part III — How It's Built
+
+## 9. Architecture
+
+### 9.1 Principles
+
+Non-negotiable.
+
+**Playable-first, always.** Every milestone gate is a smoke test: two browser tabs, lobby to match, take one action, see the result. If the smoke test is red, the build is red. Visual polish ships after gameplay, not beside it.
+
+**Server is truth.** Client renders what the server tells it to. Client does not compute damage, does not know whose turn it is, does not predict outcomes. Every action goes to the server, is validated, and the authoritative state comes back. Fog of war is filtered *server-side* before state reaches the client.
+
+**Deterministic combat.** No RNG on hit/miss/crit. Damage values are fixed. Spawns are fixed per arena. The only points of randomness in the whole system are: coin flip for first turn at match start, the 3-perk offering shuffled per draft, the arena selection per round, the `Chest` pickup rolling its single-use item on open, and hash-seeded cosmetic variation in terrain tiles (purely visual).
+
+**Placeholder art until the full gameplay loop lands.** Lobby → class select → match with turns, classes, fog, terrain, **height, rotation (v2)** → results works end to end with colored primitives before any pixel art begins. Gameplay correctness precedes visual polish, always.
+
+**One AI agent per file at a time.** Parallel lanes on the same file produce silent regressions and duplicate implementations. Fernando assigns work serially. Don't edit a file that's already on someone else's open branch.
+
+**CI as the only merge gate.** `main` is protected. A PR merges only when three checks pass: `typecheck`, `test:unit`, `test:smoke`. `--no-verify`, `@ts-ignore`, and `any` escape hatches are banned in non-test code.
+
+**Thin branches, fast merges.** One branch per small feature. Three-day maximum before merge or close. Long-lived branches become cleanup sagas.
+
+**Strict types, always.** `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`. Discriminated unions narrow at message boundaries, not with casts.
+
+### 9.2 Stack (locked)
+
+**Client runtime.** PixiJS 8.x on HTML5 Canvas, TypeScript 5.x with strict flags. Bundler: Vite. Dev port 3000.
+
+**Server runtime.** Node 20+, `ws` WebSocket library, TypeScript 5.x with the same strictness. Dev runner: `tsx`. Production: `tsc` build → `node dist/server/index.js`. Port 8080.
+
+**Testing.** Vitest for unit tests (pure logic in `src/shared` and `src/server`). Playwright for smoke tests (end-to-end two-browser flow). Smoke is required, not optional. Fixtures for deterministic server state.
+
+**CI.** GitHub Actions. One workflow, three jobs: `typecheck`, `test:unit`, `test:smoke`. All three block merge.
+
+**Linting.** ESLint with `@typescript-eslint/strict-type-checked`. Explicit rules on top: `no-explicit-any: error` (non-test), `ban-ts-comment: error` (blocks `@ts-ignore` / `@ts-expect-error` without description), `switch-exhaustiveness-check: error` (for discriminated unions like `ClientMessage` / `ServerMessage` / `GameAction`), `no-unnecessary-condition: warn`. Prettier for formatting.
+
+**Package manager.** npm. No yarn, no pnpm, no bun.
+
+**Asset pipeline.** Aseprite for pixel-art editing and animation export. Designer ChatGPT (or similar image-gen agent) for initial sprite generation only — every sprite goes through Aseprite before shipping. Music: Beatoven.ai for ambient game-dev tracks. SFX: SoundsGen or Freesound.org under permissive licenses.
+
+**Deployment.** Render or Railway for the server, static hosting (Netlify / Vercel / Cloudflare Pages) for the client bundle. Only when gameplay is solid.
+
+### 9.3 Renderer Architecture
+
+DCT is pure 2D. No Three.js, no 3D meshes, no WebGL shaders beyond what PixiJS provides. The "iso" look is faked with flat sprites on a rotated scene graph.
+
+**Layer stack** (back to front within a rotation):
+
+1. Tile stacks (side faces + top faces, sorted by `(x + y)` under current camera rotation, then by stack depth).
+2. Tile overlays (Corrupted veins, Ash Cloud overlays, cursor diamonds).
+3. Pickups.
+4. Units (sorted into the tile layer by their tile's depth key).
+5. VFX (transient; self-destroys).
+6. HUD (not rotated; screen-space).
+
+**Camera rotation transform.** Applied to the world container. 0° / 90° / 180° / 270° only — no free rotation. 150ms ease-in-out on Q/E input. During the tween, input is blocked (no clicks process until the transition settles) to prevent off-by-a-frame hit-testing.
+
+**Height render.** Each tile draws a side-face stack of `TILE_DEPTH_PX × height` beneath its top. Side-face detail is hash-seeded for variety. Units render at the top-surface height, anchor center-bottom, on their tile's top y-coordinate.
+
+**Crisp pixels.** `SCALE_MODES.NEAREST`, `image-rendering: pixelated` on the canvas element, sub-pixel positions rounded at render time. No bilinear filtering anywhere.
+
+**Input.** `InputHandler` owns mouse/keyboard. Mouse clicks inverse-transform from screen space through current camera rotation to world-space `Position`. Keyboard: Q/E rotate camera, 1–3 select ability, Tab cycle own units, Space end-turn, Esc quit to lobby.
+
+---
+
+## 10. Contracts
 
 All shared types live in `src/shared/types.ts`. This is the contract. If it compiles, both ends agree.
 
+### 10.1 Core Types
+
 ```ts
-// Core primitives
+// Primitives
 export interface Position { x: number; y: number }
 export type UnitId = string & { readonly __brand: "UnitId" }
 export type PlayerId = string & { readonly __brand: "PlayerId" }
 export type MatchId = string & { readonly __brand: "MatchId" }
+
+export type ClassId = "knight" | "mage" | "heretic"
+
 export type PerkId =
   | "bloodlust" | "second_wind" | "scouts_eye" | "energy_surge"
   | "thick_skin" | "ghost_step" | "trap_sense" | "ash_walker"
   | "first_strike" | "last_stand" | "mist_cloak" | "fortify"
   | "long_reach" | "pillager" | "counterspell" | "vampiric_touch"
 
-export type ClassId = "knight" | "mage" | "heretic"
-
 export type TerrainType =
   | "stone" | "high_ground" | "rubble"
   | "hazard_fire" | "hazard_acid" | "hazard_void"
   | "pillar" | "wall" | "shadow" | "corrupted"
 
+// NEW in v2
+export type Facing = "N" | "E" | "S" | "W"
+
+// NEW in v2 — client-only render state. NOT in shared types; lives in a client module.
+// export type CameraRotation = 0 | 90 | 180 | 270
+
 export interface TerrainTile {
   type: TerrainType
-  /** Only present for Corrupted/Ash Cloud — turns remaining */
+  /** NEW in v2. Stack height. Integer >= 0. Default 1. 0 = pit (below default floor). */
+  height: number
+  /** Only present for Corrupted / Ash Cloud — turns remaining */
   ttl?: number
   /** Underlying type for reverting dynamic effects */
   baseType?: TerrainType
@@ -539,13 +652,14 @@ export interface Unit {
   ownerId: PlayerId
   classId: ClassId
   pos: Position
+  /** NEW in v2. World-space facing. Updated on move / attack / ability target. */
+  facing: Facing
   hp: number
   maxHp: number
-  statuses: Status[]           // defending, shield_wall, iron_stance, revealed, etc.
+  statuses: Status[]
   // No cooldowns field. Ability gating is by energy + HP cost + once-per-turn
-  // flags carried inside statuses (e.g. blood_tithe_used). If a future ability
-  // needs turn-counting cooldowns, add it here and update validators — don't
-  // reach for a Record<string, number> escape hatch.
+  // flags carried inside statuses. If a future ability needs turn-counting
+  // cooldowns, add it here and update validators.
 }
 
 export interface Status {
@@ -556,7 +670,7 @@ export interface Status {
     | "revealed"
     | "stunned"
     | "blood_tithe_used"  // cleared at owner's next turn start
-  ttl: number             // turns remaining; -1 means "until toggled off" (Iron Stance)
+  ttl: number             // turns remaining; -1 = until toggled off (Iron Stance)
 }
 
 export interface Pickup {
@@ -568,7 +682,7 @@ export interface Pickup {
 export interface HexTrap {
   id: string
   ownerId: PlayerId
-  pos: Position  // hidden from non-owners via fog filter
+  pos: Position  // fog-filtered from non-owners
 }
 
 /** Temporary Ash Cloud overlay. Does not replace TerrainType. */
@@ -581,23 +695,25 @@ export interface AshCloud {
 
 export interface ArenaDef {
   slug: string                    // "pit" | "ruins" | "bridge" | "shrine" | "maze"
-  name: string                    // Display name
-  tiles: TerrainType[][]          // 8×8, [y][x]
-  spawns: [Position, Position]    // mirrored spawn positions per match
-  pickupSlots: Position[]         // fixed candidate slots; which pickup lands where is rolled at match start
+  name: string
+  tiles: TerrainType[][]          // 8×8, [y][x] — material
+  /** NEW in v2. Optional per-tile height override. [y][x]. Defaults to 1 when absent. */
+  heights?: number[][]
+  spawns: [Position, Position]
+  pickupSlots: Position[]
 }
 
 export interface MatchState {
   matchId: MatchId
-  arena: string                // arena slug
+  arena: string
   grid: { width: 8; height: 8; tiles: TerrainTile[][] }
   units: Unit[]
   pickups: Pickup[]
   traps: HexTrap[]             // fog-filtered per player
   ashClouds: AshCloud[]        // overlays — renderer draws atop tiles
   currentTurn: PlayerId
-  turnNumber: number           // monotonic counter from 1
-  turnEndsAt: number           // unix ms (server clock)
+  turnNumber: number           // monotonic from 1
+  turnEndsAt: number           // server unix-ms
   energy: Record<PlayerId, number>
   maxEnergy: Record<PlayerId, number>  // 5, or 6 with Energy Surge
   perks: Record<PlayerId, PerkId[]>
@@ -608,7 +724,7 @@ export interface MatchState {
 
 // Actions (client → server)
 export type GameAction =
-  | { kind: "move"; unitId: UnitId; path: Position[] }   // server re-validates every step
+  | { kind: "move"; unitId: UnitId; path: Position[] }
   | { kind: "attack"; unitId: UnitId; targetId: UnitId }
   | { kind: "defend"; unitId: UnitId }
   | { kind: "scout"; unitId: UnitId; center: Position }
@@ -643,13 +759,20 @@ export interface BracketState {
   currentRound: number
 }
 export interface BracketRound {
-  matches: Array<{ matchId: MatchId; players: [PlayerId, PlayerId]; winner?: PlayerId; status: "pending" | "active" | "done" }>
+  matches: Array<{
+    matchId: MatchId
+    players: [PlayerId, PlayerId]
+    winner?: PlayerId
+    status: "pending" | "active" | "done"
+  }>
 }
 ```
 
 Two rules about this file. First: it is THE contract — nothing else defines these shapes. Second: game-shape types live *only* here. If you find yourself wanting to declare `interface MatchState` in a client file, stop.
 
-All game numbers — grid size (8), energy (5), turn timer (30s), class HP/damage/sight values, perk effects — live in `src/shared/constants.ts`. No inline magic values anywhere else. Minimum shape:
+### 10.2 Constants
+
+All game numbers live in `src/shared/constants.ts`. No inline magic values anywhere else.
 
 ```ts
 // src/shared/constants.ts
@@ -662,16 +785,22 @@ export const BOT_FILL_WAIT_MS = 15_000 as const
 export const PERK_DRAFT_TIMER_MS = 20_000 as const
 export const MAX_TRAPS_PER_HERETIC = 2 as const
 
+// NEW in v2
+export const DEFAULT_TILE_HEIGHT = 1 as const
+export const TILE_DEPTH_PX = 28 as const              // side-face height per unit of stack
+export const CAMERA_ROTATION_MS = 150 as const        // camera tween duration
+
 export const CLASS_STATS: Record<ClassId, {
   hp: number
   baseAttackDamage: number
   attackRange: number
   sightRange: number
   requiresLoS: boolean
+  jump: number                    // NEW in v2
 }> = {
-  knight:  { hp: 24, baseAttackDamage: 5, attackRange: 1, sightRange: 2, requiresLoS: false },
-  mage:    { hp: 16, baseAttackDamage: 3, attackRange: 3, sightRange: 3, requiresLoS: true  },
-  heretic: { hp: 20, baseAttackDamage: 4, attackRange: 2, sightRange: 2, requiresLoS: false },
+  knight:  { hp: 24, baseAttackDamage: 5, attackRange: 1, sightRange: 2, requiresLoS: false, jump: 2 },
+  mage:    { hp: 16, baseAttackDamage: 3, attackRange: 3, sightRange: 3, requiresLoS: true,  jump: 3 },
+  heretic: { hp: 20, baseAttackDamage: 4, attackRange: 2, sightRange: 2, requiresLoS: false, jump: 3 },
 } as const
 
 export const MOVE_COST_DEFAULT = 1 as const
@@ -683,304 +812,584 @@ export const HIGH_GROUND_DAMAGE_BONUS = 0.25 as const
 export const MIN_DIRECT_DAMAGE = 1 as const
 ```
 
-Actual file has more — perk effects, ability costs, tile depth (28px), sprite canvas size (64), etc. The rule: if a number appears in this spec, it appears in `constants.ts`, and is imported everywhere it's used.
+Actual file has more — perk effects, ability costs, sprite canvas size (64), etc. Rule: if a number appears in this spec, it appears in `constants.ts`, and is imported everywhere it's used.
 
----
+### 10.3 Server Protocol
 
-## 19. Server Protocol
+Transport: WebSocket at `ws://localhost:8080` (dev) / `wss://...` (prod). Framing: JSON-per-message, UTF-8 text frames only. No binary frames. `permessage-deflate` disabled — messages are tiny, compression doesn't pay back CPU. One JSON value per frame; no batching, no newline-delimited streams.
 
-Transport: WebSocket at `ws://localhost:8080` (dev) / `wss://...` (prod). Framing: JSON-per-message, UTF-8 text frames only. No binary frames. `permessage-deflate` is disabled — the messages are tiny and compression doesn't pay back its CPU cost. One JSON value per frame; no batching, no newline-delimited streams.
+**Session tokens.** Server-issued opaque UUIDv4 in `hello`. Valid 5 minutes from issue or until match end (whichever later). Reconnect during live match requires matching token. Tokens are not bearer credentials in any meaningful sense — they identify reconnects, not authenticate identity. No PII.
 
-**Session tokens.** Server-issued opaque UUIDv4 string in the `hello` message. Tokens are valid for 5 minutes from issue or until match end (whichever is later). Reconnect during a live match requires the matching token. Tokens are not bearer credentials in any meaningful sense — they exist to identify reconnects, not to authenticate identity. Don't put PII in them.
+**Connection lifecycle.** Client opens ws → server sends `hello` (`serverVersion`, `sessionToken`) → client sends `joinTournament` with `name` and (reconnect) prior token → server assigns slot → `tournamentUpdate` broadcasts periodically.
 
-**Connection lifecycle.** Client opens ws → server sends `hello` with `serverVersion` and `sessionToken` → client sends `joinTournament` with `name` and (on reconnect) the prior `sessionToken` → server assigns a slot in the current or next tournament → server broadcasts `tournamentUpdate` periodically.
+When the bracket fills (8 humans or humans+bots after 15s wait), server pairs players and sends `matchStart` to each pair with fog-filtered initial `MatchState`. Match proceeds via `action` / `actionResult` / `stateUpdate`. Ends with `matchOver`. Winners receive `perkOptions`.
 
-When the bracket fills (8 humans or humans + bot-fill after a 15s matchmaking wait), server pairs players and sends `matchStart` to each pair with a fog-filtered initial `MatchState`. Match proceeds via `action` / `actionResult` / `stateUpdate`. Match ends with `matchOver`. If tournament continues, winners receive `perkOptions`, pick, and the cycle repeats.
+**Validation.** Every action validated server-side against current state: whose turn, unit ownership, target in range, LoS (3D-aware, v2), energy, impassability, unit alive, **`|Δh|` within jump (v2)**. Invalid → `actionResult { ok: false, error }`, no state change. Never trust client input.
 
-**Validation.** Every action is validated server-side against current state: whose turn is it, is the unit owned by the sender, is the target in range, does LoS exist, is there enough energy, is the tile impassable, is the unit dead, etc. Invalid actions receive `actionResult { ok: false, error }`; state does not change. Never trust client input. Ever.
+**Rate limit.** Max 10 actions/second/player. Excess rejected with `rate_limited`, no energy consumed.
 
-**Rate limit.** Maximum 10 actions per second per player. Excess actions are rejected with `actionResult { ok: false, error: "rate_limited" }` and do not consume energy. Prevents button-mash bugs and spam from a misbehaving client.
+**Fog filtering.** Per-player view computed before broadcast. Strip enemy units outside sight; strip traps not owned by recipient; strip pickups outside sight; strip unobservable actions. Two players same match can and will receive different payloads same tick.
 
-**Fog filtering.** Before broadcasting a `stateUpdate` to a given player, the server produces a per-player view. Strip enemy units outside sight; strip traps not owned by the recipient; strip pickups outside sight and replace their tiles with fog markers; strip recent actions that weren't observable. Two players in the same match can and will receive different payloads for the same server tick.
+**Action ordering.** Server processes strictly serial per match (one in-flight at a time). Acting player receives `actionResult { ok, eventId }` first; both players then receive `stateUpdate` carrying that `eventId`. Client must not commit visual state from `actionResult` alone.
 
-**Action ordering.** Server processes actions strictly serially per match (single in-flight action at a time). The acting player receives `actionResult { ok, eventId }` first; both players then receive a `stateUpdate` carrying that `eventId`. The client must not commit visual state from `actionResult` alone — wait for the `stateUpdate`. This guarantees animation correctness across both players.
+**Clock and timer.** `turnEndsAt` is server unix-ms. Client computes remaining as `Math.max(0, turnEndsAt - Date.now())`. Drift tolerated; server authoritative on expiry.
 
-**Clock and timer.** `turnEndsAt` is a server-clock unix-ms timestamp. The client computes remaining time as `Math.max(0, turnEndsAt - Date.now())`. Drift is tolerated (browser clocks lie); the server is authoritative on actual turn expiry. Don't try to sync NTP or correct skew client-side.
+**Reconnect.** 30-second grace (`RECONNECT_GRACE_MS`). Turn timer continues during the grace window — disconnecting does not pause the match. On reconnect with matching token, player resumes with whatever time remains. After 30s or on `turnEndsAt` expiring during disconnect, player forfeits. Bots never disconnect.
 
-**Reconnect.** If a client disconnects mid-match, the server holds their slot for 30 seconds (`RECONNECT_GRACE_MS`). The turn timer continues to count down during the grace window — disconnecting does not pause the match. On reconnect with the matching session token, the player resumes with whatever time remains. After 30 seconds without reconnect (or on `turnEndsAt` expiring during disconnect, whichever first), the player forfeits the match to prevent stalled brackets. Bots never disconnect or forfeit.
+**Perk draft.** 20-second cap (`PERK_DRAFT_TIMER_MS`). Timeout auto-picks the first option.
 
-**Perk draft.** Between rounds, advancing players receive `perkOptions` (3 perk IDs). They have `PERK_DRAFT_TIMER_MS` (20 seconds) to send `selectPerk`. On timeout, the server auto-picks the first option in the list. Both players' selections are gathered before the next match starts; one slow drafter does not delay the other indefinitely (the timer is the cap).
+**Bot fill.** After 15s from first `joinTournament`, bots fill empty slots. Same engine API, same fog filter, same rate limits.
 
-**Bot fill.** If a tournament has fewer than 8 human players after 15 seconds from the first `joinTournament` (`BOT_FILL_WAIT_MS`), the server adds bots to fill the remaining slots. Bots connect through the same engine API as humans, receive the same fog-filtered state, and respect the same rate limits.
-
-**Error codes.** `actionResult.error` and `error` messages use a fixed enum. Do not invent new codes — add them here first.
+**Error codes.** Fixed enum:
 
 | Code | When | Retryable? |
 |------|------|-----------|
-| `not_your_turn` | Action submitted while `currentTurn !== sender` | No (wait for turn) |
-| `insufficient_energy` | Action cost exceeds remaining energy | No |
-| `out_of_range` | Target tile/unit outside ability or attack range | No |
-| `no_line_of_sight` | Target requires LoS and LoS is blocked | No |
-| `target_untargetable` | Target is on a shadow tile or otherwise protected | No |
+| `not_your_turn` | Action while `currentTurn !== sender` | No (wait for turn) |
+| `insufficient_energy` | Cost exceeds remaining energy | No |
+| `out_of_range` | Target outside ability or attack range | No |
+| `no_line_of_sight` | Target requires LoS and it's blocked | No |
+| `target_untargetable` | Target on shadow tile or otherwise protected | No |
 | `invalid_path` | Movement path fails step-by-step validation | No |
-| `tile_impassable` | Move target or ability target is pillar/wall | No |
-| `tile_occupied` | Target tile has a unit or (for Blink) another blocker | No |
+| `tile_impassable` | Move/target is pillar/wall/impassable | No |
+| `tile_occupied` | Tile has a unit or (Blink) another blocker | No |
+| `height_exceeds_jump` | **NEW v2.** `|Δh|` exceeds walker's `jump` | No |
 | `duplicate_trap` | Hex Trap target already has a trap | No |
 | `self_kill_prevented` | Blood Tithe would drop Heretic to 0 HP | No |
 | `unit_dead` | Action references a dead unit | No |
-| `unit_not_owned` | Unit id not owned by sender | No (malicious/bug) |
+| `unit_not_owned` | Unit not owned by sender | No (malicious/bug) |
 | `match_not_active` | Action during `over` phase | No |
-| `rate_limited` | More than 10 actions/sec | Yes (back off) |
-| `bad_message` | Malformed JSON or unknown `type` | No |
-| `session_expired` | Session token expired or unknown | No (reconnect flow) |
-| `server_busy` | Server-side constraint (match pool full, etc.) | Yes |
-| `server_error` | Unhandled server exception. Also logged. | Yes once |
+| `rate_limited` | >10 actions/sec | Yes (back off) |
+| `bad_message` | Malformed JSON or unknown type | No |
+| `session_expired` | Token expired or unknown | No (reconnect flow) |
+| `server_busy` | Pool full, etc. | Yes |
+| `server_error` | Unhandled server exception; also logged | Yes once |
 
-Client surfaces `not_your_turn` / `insufficient_energy` as silent UI feedback; surfaces `rate_limited` / `server_error` as an unobtrusive toast; never shows raw codes to players.
+Client surfaces `not_your_turn` / `insufficient_energy` / `height_exceeds_jump` as silent UI feedback; `rate_limited` / `server_error` as unobtrusive toast; never shows raw codes.
 
-**Match log (replay stub).** Every accepted action is appended server-side to an in-memory log keyed by `matchId`: `{ seq, eventId, at, actor, action, resultingHashOfState }`. Log is kept until 60s after `matchOver`, then dropped. Post-jam: persist to disk for replays. Jam scope: present for debugging, not exposed to clients.
+**Match log (replay stub).** Every accepted action appended in-memory keyed by `matchId`: `{ seq, eventId, at, actor, action, resultingHashOfState }`. Retained 60s after `matchOver`. Post-jam: disk persistence for replays.
 
-**Performance budgets.** These are the *target* envelopes, not hard limits, but if a commit blows them the PR gets flagged in review.
+**Performance budgets.** Target envelopes (not hard limits; blown budgets get flagged in review):
 
-- Server action-processing: < 10 ms per action (p99) for the validator + state update + fog filter. Includes JSON serialize.
-- Server memory per active match: < 500 KB (state + log combined).
-- `stateUpdate` payload size after fog filtering: < 4 KB typical, < 16 KB hard ceiling (refuse to send — indicates a bug).
-- Client render: 60 FPS in a match scene on a mid-tier 2020 laptop. No GC stalls > 16 ms during a turn.
-- Network round-trip (action → stateUpdate applied): target < 200 ms on localhost, < 400 ms on the hosted server.
+- Server action-processing p99: < 10 ms (validator + state update + fog filter + serialize).
+- Server memory per active match: < 500 KB.
+- `stateUpdate` payload post-fog: < 4 KB typical, < 16 KB hard ceiling (refuse to send — indicates a bug).
+- Client render: 60 FPS in match scene on a mid-tier 2020 laptop. No GC stalls > 16 ms in-turn.
+- Network round-trip (action → stateUpdate applied): < 200 ms localhost, < 400 ms hosted.
 
-**Environment variables.** Server reads from `process.env` only; do not hardcode. At minimum: `PORT` (default 8080), `LOG_LEVEL` (default `info`), `NODE_ENV`. `.env` is git-ignored; a committed `.env.example` documents every variable the server reads. Never log session tokens or player names at `info` or above.
+**Environment variables.** Server reads `process.env` only; don't hardcode. At minimum: `PORT` (default 8080), `LOG_LEVEL` (default `info`), `NODE_ENV`. `.env` git-ignored; `.env.example` documents every variable. Never log session tokens or player names at `info` or above.
 
-**Health endpoint.** Dev-only HTTP `GET /health` on the same port: `{ status: "ok", uptimeMs, matchesActive, playersConnected, serverVersion }`. Useful for the smoke test and for a quick "is it up?" check during deploys.
-
----
-
-## 20. Bot AI
-
-Bots are simple, deterministic, and fill brackets. They are not meant to be smart.
-
-**Decision tree per turn (pseudo-code):**
-
-```
-while energy > 0 and useful action available:
-  if enemy unit in attack range and line-of-sight:
-    attack
-  elif own HP below 30% and retreat tile available:
-    move toward nearest non-adjacent safe tile
-  elif enemy unit visible and not in attack range:
-    move one tile toward them
-  elif enemy not visible and scout available:
-    scout in the direction of their last known position (or a centroid)
-  elif pickup visible and within 3 tiles:
-    move toward it
-  else:
-    endTurn
-
-Abilities: use at opportunity if energy and target valid.
-  Knight → Vanguard Charge if can close + damage.
-  Mage → Cinder Bolt at range, Blink to escape if adjacent, Ash Cloud on choke.
-  Heretic → Blood Tithe for explosive close-out turns, Hex Trap on likely approach tiles, Desecrate on own position if being chased.
-```
-
-Bots play at one skill level for M10–M13. Variable difficulty is post-jam.
-
-Bots use the same action validation path as humans. They are a player implementation, not a separate engine.
+**Health endpoint.** Dev-only HTTP `GET /health`: `{ status: "ok", uptimeMs, matchesActive, playersConnected, serverVersion }`. Useful for smoke test and deploy checks.
 
 ---
 
-## 21. Art Direction — Terrain
+## 11. Repo Structure
 
-### 21.1 Style Target
+```
+.
+├── .github/
+│   └── workflows/
+│       └── ci.yml                # typecheck + unit + smoke, all required
+├── .gitignore                    # node_modules, dist, vite.config.ts.timestamp-*, .env, .DS_Store
+├── public/
+│   ├── sprites/                  # The only sprite folder. Do not create a second one.
+│   │   ├── champions/            # 4 facings per animation per champ (SE/SW/NE/NW, v2)
+│   │   ├── tiles/                # One PNG per terrain type; renderer rotates (v2)
+│   │   ├── vfx/
+│   │   ├── pickups/
+│   │   ├── perks/
+│   │   ├── portraits/
+│   │   ├── hud/
+│   │   ├── abilities/
+│   │   └── logo/
+│   └── audio/
+├── index.html                    # Vite entry — project root per Vite convention
+├── src/
+│   ├── shared/                   # Client + server import from here only
+│   │   ├── types.ts              # Single source of truth for all contracts
+│   │   ├── constants.ts          # Every game number
+│   │   ├── grid.ts               # manhattanDistance, isInBounds, positionKey, lineOfSight (3D-aware in v2)
+│   │   └── index.ts              # Barrel export
+│   ├── server/
+│   │   ├── index.ts              # ws server, connection handling, routing
+│   │   ├── GameEngine.ts         # Pure game logic. Testable without ws.
+│   │   ├── TournamentManager.ts  # Bracket state, bot fill, perk draft orchestration
+│   │   ├── BotAI.ts              # Deterministic bot (jump-aware in v2)
+│   │   ├── Fog.ts                # Per-player state filtering
+│   │   ├── validators.ts         # Pure action validation (height-aware in v2)
+│   │   └── arenas/               # Arena definitions (data, not code)
+│   │       ├── pit.ts
+│   │       ├── ruins.ts
+│   │       ├── bridge.ts
+│   │       ├── shrine.ts
+│   │       └── maze.ts
+│   └── client/
+│       ├── main.ts               # Entry. Bootstraps PixiJS app + network.
+│       ├── network.ts            # ws client, reconnect, message routing
+│       ├── Renderer.ts           # Single renderer. Camera rotation + height stacks in v2.
+│       ├── SceneManager.ts       # Scene lifecycle, transitions
+│       ├── scenes/               # The ONLY scene hierarchy. No screens/.
+│       │   ├── TitleScene.ts
+│       │   ├── LobbyScene.ts
+│       │   ├── MatchScene.ts
+│       │   ├── PerkDraftScene.ts
+│       │   ├── BracketScene.ts
+│       │   ├── ResultsScene.ts
+│       │   └── SpectatorScene.ts
+│       ├── input/
+│       │   └── InputHandler.ts   # Q/E rotate; inverse-transform clicks to world-space (v2)
+│       ├── ui/
+│       │   └── HUD.ts
+│       └── audio/
+│           └── SoundManager.ts
+├── tests/
+│   ├── unit/                     # Vitest. Pure logic only.
+│   └── smoke/                    # Playwright. Lobby → match → action.
+├── SPEC.md                       # This file. The only design doc.
+├── ART_SPEC.md                   # Sprite artist brief
+├── README.md                     # Setup + run only. No design content.
+├── tsconfig.json
+├── package.json
+└── vite.config.ts
+```
 
-Final Fantasy Tactics (PS1) combat scenes, with Diablo I's palette pushed darker. Hand-painted pixel detail per tile, not flat color fills. Visible materials, not symbols.
+`index.html` lives at the project root per Vite convention; `public/` holds static assets only.
 
-### 21.2 Palette (strict)
+Anything not in this tree needs a PR conversation about why it exists. Top-level markdown is `README.md`, `SPEC.md`, and `ART_SPEC.md` only.
+
+---
+
+## 12. Milestones
+
+Each milestone is a gate. You do not start the next one until the current one's smoke test is green on `main`. Every milestone has an explicit Definition of Done and a smoke check.
+
+**M0 — Skeleton.** Repo initialized, strict tsconfig, Vite + tsx running, ESLint + Prettier wired, GitHub Actions CI running typecheck + empty unit + smoke-boot on every PR, `main` protected. Server accepts a WS connection and sends `{ type: "hello", serverVersion }`. Client connects and logs it. **Smoke:** `npm run dev` → browser → console shows server hello.
+
+**M1 — Grid and units.** Server holds an 8×8 grid and two connected players, each with one unit at mirrored spawn positions (1,4) and (6,3). Client renders grid as 64×32 iso diamonds and units as colored circles with letter labels. No sprites, no animation, no terrain variation. **Smoke:** two tabs both see the same grid and both units.
+
+**M2 — Move action, energy, turn order.** Click a tile → `{ kind: "move", to }` action. Server validates (in bounds, not occupied, not impassable, enough energy), applies, broadcasts authoritative state. Orthogonal only, 1 energy/tile. Energy refresh 5 at turn start. Turn order: coin flip, then alternating. **Smoke:** two tabs, A moves, B sees it within 200ms, A cannot move more than 5, B cannot act during A's turn.
+
+**M3 — Attack, HP, death, match-end.** `Attack` action (2 energy). Adjacent for melee, class-ranged for ranged. Fixed damage by class. Units have HP, die at 0, are removed. Match ends when one side has zero living units. `ResultsScene` shows winner. **Smoke:** attack reduces HP, death ends match, both clients transition to ResultsScene.
+
+**M4 — Turn timer + full turn loop.** 30s timer, auto-end on timeout, remaining energy forfeit. `EndTurn` action. Timer visible in HUD. **Smoke:** full match plays end-to-end across two tabs with no refresh, timer counts down, timeout ends turn.
+
+**M5 — Three classes with full 3-ability kits.** Ashen Knight, Pale Mage, Heretic. Stats and abilities exactly per §7. `LobbyScene` lets each player pick a class before match start. `Defend` and `Wait` actions added. **Smoke:** all nine matchups (incl. mirrors) playable without crashes; each ability's effect is visible and validated server-side.
+
+**M6 — Fog of war + Scout.** Server filters `MatchState` per player based on sight (class-modified). Client renders fog as dark overlay. Terrain always visible; enemy positions only in sight. Last-known ghosts. `Scout` action (1 energy): reveal 3×3 for current turn. **Smoke:** A cannot see B outside sight range; Scout reveals B; moving out re-fogs; ghost appears on last-seen tile.
+
+**M7 — Full terrain + battlefield pickups.** All seven terrain types (§6.2) with their mechanics. Four pickup types (§8.4). `UsePickup` action (1 energy). **Smoke:** high ground costs 2 to enter, hazards DoT, pillars block LoS for attacks and Scout, shadow tiles grant untargetability, pickups grant their effects.
+
+### M7.5 — Rotatable camera + terrain height (NEW in v2)
+
+The FFT pivot's engineering foundation. Adds camera rotation, multi-height terrain, unit facing, and the mechanical rules that depend on them. Art stays programmer-placeholder (colored circles + colored diamonds) — this milestone is about the engine, not the look.
+
+**Ships:**
+
+- `Tile.height` added to `TerrainTile` (§10). Default 1 when absent; arenas may override via `heights` table.
+- `Unit.facing` added (§6.6, §10). Server updates on move/attack/ability target. Rendered as a small indicator (wedge/triangle) on the colored-circle placeholder until M9 sprites ship.
+- Client-only camera rotation state (0° / 90° / 180° / 270°). Q/E keys rotate with 150 ms ease-in-out tween. Input blocked during tween.
+- Renderer draws tiles as stacked side-faces of `TILE_DEPTH_PX × height` beneath the top. Input inverse-transforms through current camera angle to world-space.
+- Movement validator: Δheight gate (`|Δh| ≤ 1` free, `> 1` requires `jump ≥ |Δh|`). New error code `height_exceeds_jump`.
+- LoS made 3D-aware: line from attacker top-surface to target top-surface, blocked if any intermediate column's top exceeds the line's height there.
+- Per-class `jump` stat in `CLASS_STATS` (Knight 2, Mage 3, Heretic 3).
+- Bots respect `jump` in pathing.
+- `F3` debug overlay shows current camera rotation and hovered tile height.
+
+**Does NOT ship:**
+
+- FFT-quality terrain or champion sprites (those are M8 and M9).
+- 4-facing sprite assets (M9). Unit facing is stored server-side and rendered as a direction indicator on the placeholder.
+- Arena-level height authoring for existing v1.x arenas (they stay flat = 1). One playground arena with stacked terrain ships to exercise the smoke test.
+
+**Smoke.** Two tabs. Rotate camera with Q/E — view tweens smoothly, input still works after the tween settles. Test arena has at least one height-3 stack. Knight cannot step onto the 3-stack from height 1 (rejected with `height_exceeds_jump`). Mage can (`jump = 3`). LoS from behind the stack to a target behind-and-below is blocked; rotating the camera 90° reveals the target visually but fog state is unchanged (server-authoritative vision is not affected by camera angle).
+
+---
+
+**M8 — FFT-quality terrain textures + rotation-ready tiles.** Replace colored diamond tiles with textured pixel-art tiles specified in §14 and ART_SPEC v2. One PNG per terrain type (renderer rotates). Per-tile detail placement hash-seeded on `(x, y, cameraRotation)`. Side-face painting accommodates any rotation. `image-rendering: pixelated` locked, `SCALE_MODES.NEAREST`, sub-pixel rounding. Height-1 vs height-2 vs height-3 stacks are visually distinguishable. **Smoke:** all seven terrain types distinguishable at a glance on the live grid at every camera rotation; pixels crisp at every zoom level.
+
+**M9 — FFT-quality champion sprites + ability VFX (4-facing).** Replace colored circles with full sprite sheets per §15 and ART_SPEC v2. Each champion ships idle / walk / attack / hit / death / defend / cast-or-channel / kneel × 4 facings (SE, SW, NE, NW). ~96 sheets total. Ability VFX sprites per ART_SPEC. Damage numbers with scale-punch animation. **Smoke:** all three champions animate correctly across all state transitions at every camera rotation; ability casts show telegraph + impact VFX; Knight's shield stays on the left arm in world-space across all four camera angles.
+
+**M10 — Tournament bracket + bot fill + perk draft.** 8-player single-elimination, fixed bracket size. `TournamentManager` pairs players, advances winners, handles losses. Bot fill after 15s matchmaking wait — bracket always exactly 8 entrants before round 1. Seeding randomized. `BracketScene` shows current standings. Perk draft between rounds: winner picks 1 of 3, lasts next round only, no stacking. All 16 perks from §8.2 implemented. Losing players route to `SpectatorScene` (placeholder for M12). **Smoke:** full 8-player tournament runs to completion with mixed humans and bots; perks visibly modify next match.
+
+**M11 — Five arenas + map rotation.** All five arena archetypes (§8.3) built out as terrain + height layouts with fixed pickup slots. Random arena selected per round. **Smoke:** across a full tournament, at least 3 different arenas appear; each plays distinctly.
+
+**M12 — Surrender + spectator mode.** `Kneel` action: 3s dramatic pause, bell-toll cue, match ends, winner portrait next to cracked-portrait effect on the surrenderer in the bracket. Eliminated players land in `SpectatorScene` and can watch any in-progress match (read-only state stream). **Smoke:** surrender triggers the sequence; spectator watches a live match end-to-end.
+
+**M13 — Audio, polish, submission.** Music tracks per Part IV wired into scenes, SFX on every action, ambient wind in match scenes. Final HUD pass: portraits, energy pips, turn banner, status icons. Title, main menu, post-tournament stats screen. Deploy. **Smoke:** cold-open in incognito, complete a full tournament, hear audio, see end credits.
+
+Nothing ships beyond M13 before submission. Post-submission items live in Part V §23.
+
+---
+
+## 13. Workflow
+
+### 13.1 Branches & PRs
+
+**Branches.** One branch per small feature. Naming: `<agent>/m<milestone>-<slug>`, e.g. `kai/m7-5-rotation-height`, `fernando/m9-knight-sprites`, `cursor/m13-hud-polish`. Lifespan target: under three days. A branch open more than a week is a smell.
+
+**Commits.** Conventional-ish. Prefix with area when useful: `server:`, `client:`, `shared:`, `ci:`, `art:`, `docs:`. Body explains *why* when the *what* isn't obvious from the diff.
+
+**PRs.** Target `main` only. Description must name which milestone the PR serves and which smoke gate it affects. Required checks: `typecheck`, `test:unit`, `test:smoke`. No force-pushes to `main`. No merges that skip CI. No `--no-verify`.
+
+**Serial work.** For any given file in `src/`, only one agent may be editing it on an open branch at a time. If two agents want the same file, coordinate in chat before starting. No exceptions through M13.
+
+### 13.2 Type Discipline
+
+**Typecheck gate.** `npm run typecheck` must be green before every commit. Banned in non-test code: `@ts-ignore`, `any`, `as any`, unchecked index access. If a PixiJS event type is intentionally broad, cast at the boundary and narrow immediately.
+
+**Smoke gate.** `npm run test:smoke` must be green before every merge. Smoke boots the server, opens two Playwright-controlled browsers, walks lobby → match → one action → asserts it took effect. If it fails, the build is broken, not the test. Fix the build.
+
+### 13.3 Scripts (locked names)
+
+CI and docs reference these. If a script doesn't exist, add it — don't invent a new name. The three gate scripts (`typecheck`, `test:unit`, `test:smoke`) are sacred; renaming them means renaming them in CI too.
+
+| Script | Runs |
+|--------|------|
+| `npm run dev` | Client (Vite :3000) + server (tsx :8080) in parallel via `concurrently`. |
+| `npm run dev:client` | Vite only. |
+| `npm run dev:server` | `tsx watch src/server/index.ts` only. |
+| `npm run build` | `tsc -p tsconfig.server.json && vite build`. |
+| `npm run start` | `node dist/server/index.js`. |
+| `npm run typecheck` | `tsc --noEmit`. CI gate #1. |
+| `npm run test:unit` | Vitest against `tests/unit/`. CI gate #2. |
+| `npm run test:smoke` | Playwright against `tests/smoke/`, boots server. CI gate #3. |
+| `npm run lint` | ESLint over `src/` and `tests/`. |
+| `npm run format` | Prettier write. |
+
+### 13.4 Dev Ergonomics
+
+Cheap tools that save days. Build once, use every session.
+
+**Debug overlay.** Press `F3` in match scene: shows `turnNumber`, last `eventId`, your fog-filtered units, server round-trip time, current scene name, **current `cameraRotation` (v2)**, **hovered tile height (v2)**. Hidden in all other scenes. Session-local toggle. Gated behind `import.meta.env.DEV` — stripped from production bundles.
+
+**Dev cheats (DEV builds only).** `?dev=1` enables: `1`/`2`/`3` force class, `G` grants +5 energy, `K` kills opponent (debug match-end), `L` toggles fog overlay off, **`R` cycles camera rotation without tween (v2, for screenshots at exact angles)**. Server validates — cheat keys emit tagged actions accepted only when `NODE_ENV !== 'production'`.
+
+**Local 1v1.** `npm run dev` opens two browser tabs automatically (via Vite config).
+
+**Deterministic match seed.** `?seed=<uint>` forces match RNG seed (coin flip, perk shuffle, arena pick). Test flows and playtest recordings rely on it. Server accepts only when `NODE_ENV !== 'production'`.
+
+**Hot reload.** Vite HMR client. `tsx watch` server — full reload on server file change. Active matches drop on server reload (expected in dev).
+
+### 13.5 The Trap List
+
+Don't step on these. They've all been stepped on at least once during v1.x.
+
+- Do not commit `vite.config.ts.timestamp-*.mjs` or similar build-tool artifacts.
+- Do not create a second UI hierarchy parallel to `scenes/`. If you want a "screen," make a scene.
+- Do not create a second sprite folder. `public/sprites/` is the only one.
+- Do not inline helper functions across files. Used in more than one place → `src/shared/` on the first duplication.
+- Do not let visual features merge while core gameplay is broken.
+- Do not commit briefing or scratchpad markdowns to the repo root. PR descriptions or nothing. Only `README.md`, `SPEC.md`, `SPEC.v1.md` (archived), and `ART_SPEC.md` live in root.
+- Do not skip the smoke gate "just this once."
+- Do not run two AI agents on overlapping files.
+- Do not put the project in a cloud-sync folder (OneDrive, Dropbox, iCloud).
+- Do not use `@ts-ignore`, `any`, or `as any` to silence type errors. Fix the types.
+- Do not refactor across milestone lines. A refactor PR is its own gated thing, not a side-quest in a feature branch.
+- Do not ship a class with a partial ability kit for "playtesting." All three abilities or none.
+- Do not hardcode grid dimensions, energy amounts, damage values, or any numbers outside `constants.ts`.
+- **Do not compute LoS in 2D once height is live (v2).** Every LoS check goes through the 3D-aware helper in `src/shared/grid.ts`.
+- **Do not treat camera rotation as game state (v2).** It is client-only. The server must not know or care about viewing angle.
+- **Do not mirror sprites across facings (v2).** Mirroring puts the Knight's shield on the wrong arm. Use the four painted facings.
+
+---
+
+---
+
+# Part IV — How It Looks and Sounds
+
+Part IV enumerates every visual and auditory asset the game ships, and the rules that govern how it's made and used. This part does *not* specify pixels — `ART_SPEC.md` is the pixel bible. When Part IV and ART_SPEC disagree, Part IV (this doc) is engineering-authoritative; ART_SPEC gets patched.
+
+ART_SPEC v1.3 remains the current pixel brief. ART_SPEC v2 follows the designer pilot return — once we've confirmed FFT-quality is achievable at 4-facing scale, we rewrite ART_SPEC to reflect the v2 sprite-orientation conventions and the multi-height tile grammar. Part IV is written to be compatible with either version.
+
+---
+
+## 14. Art Direction — Terrain
+
+### 14.1 Aesthetic Target
+
+Final Fantasy Tactics (PS1, 1997) combat scenes with Diablo I's palette pushed darker. Hand-painted pixel detail per tile, not flat color fills. Visible materials, not symbols. Every tile reads at a glance as its terrain type even at 1× zoom on a cluttered grid.
+
+Anti-targets (do NOT look like these): Stardew Valley, Hyper Light Drifter, NES 8-bit, modern flat-vector pixel art, default Aseprite presets. The tone is gothic, oppressive, mortuary — not cheerful, not cute.
+
+### 14.2 Palette (canonical)
 
 | Role | Primary | Shadow | Highlight |
 |------|---------|--------|-----------|
-| Stone/metal | `#5a5a68` | `#3a3a48` | `#7a7a8a` |
+| Stone / metal | `#5a5a68` | `#3a3a48` | `#7a7a8a` |
 | Cold highlight | `#aaaacc` | — | `#ccccdd` (never pure white) |
 | Earth | `#3a2a1a` | `#2a1a0a` | `#5a4a3a` |
-| Blood/ember | `#8b0000` | `#5a0000` | `#cc2222` |
+| Blood / ember | `#8b0000` | `#5a0000` | `#cc2222` |
 | Fire accent | `#ff6600` | `#cc4400` | `#ffaa44` |
-| Magic | `#6633aa` | `#4a2288` | `#8866ff` |
-| Pale arcane | `#88aaff` | `#5577cc` | `#aaccff` |
+| Magic (violet) | `#6633aa` | `#4a2288` | `#8866ff` |
+| Pale arcane (blue) | `#88aaff` | `#5577cc` | `#aaccff` |
 | Arcane cloth | `#2a2a5a` | `#1a1a38` | `#4466cc` |
 | Gold trim | `#bba040` | `#886a20` | `#ddc060` |
 | Background | `#0a0a15` | `#0e1020` | — |
 
-**Rules:** Never pure white (`#ffffff`). Never fully-saturated RGB primaries (#ff0000, #00ff00, #0000ff). 16–24 colors per sprite. Near-black (`#0a0a15`) for canvas backgrounds. The palette above is the *core direction* — each sprite may introduce class- or material-specific shades (documented in §22 and §21.3) as long as they read as adjacent to a palette role (e.g. a Heretic bone gauntlet is a warm off-white in the `Earth`/`Gold trim` neighborhood, not a cool cyan). If a sprite's color lives nowhere near any palette role, snap it to the closest one.
+**Hard rules (enforced at QA).**
 
-### 21.3 Tile Details (64×32 diamond top face)
+- Never pure white `#ffffff`. Brightest white is `#ccccdd` (cold highlight).
+- Never fully-saturated RGB primaries (`#ff0000`, `#00ff00`, `#0000ff`).
+- 16–24 distinct colors per sprite.
+- 1 px dark outline (`#1a1a20` or darker) on every character, prop, and VFX motif.
+- No anti-aliasing on outlines or edges. Partial-alpha edge pixels are export bugs.
+- No dithering. We are not using dither as a stylistic choice.
+- Light comes from **upper-left** in every sprite and tile. Consistent across everything. NE / NW unit sprites (back-facing) still have their highlights on the upper-left of screen space, which is the character's *back* in those views — this is correct.
 
-**Stone (default).** Warm gray-brown (`#4a4550`) base. Draw 2–3 horizontal mortar lines (1px, +8 brightness) across the face. Add 1–2 vertical mortar lines offset per row to form a brick bond. Occasional moss accent: 2–3px green-brown `#3a4a30` dots in one corner of random blocks. Occasional crack: 1px dark diagonal `#2a2025` on ~25% of tiles. Subtle 1px lighter highlight on upper-left edge of each block. Seed by hash of `(x, y)` for deterministic variation.
+### 14.3 Tile Canvas (v2)
 
-**High Ground.** Sandy/earthy top face with horizontal texture grain (tiny 1px streaks). Base `#5a4a3a`. Small grass tuft clusters along edges: 2–3px `#4a6a3a`. Raised 1px bright edge along upper-left diamond edges.
+Each base tile authored at:
 
-**Rubble.** 3–5 small irregular 4–8px polygon chunks scattered on the face. Each chunk: upper-left highlight edge, lower-right shadow edge. Gravel base: slightly textured with many tiny dots. Darker and more chaotic than Stone.
+- **Top face:** 64 × 32 diamond. The walkable surface.
+- **Side face (one stack unit):** 64 × 28 diamond band beneath the top.
+- **Export canvas:** 64 × 60 PNG with transparency. Diamond top painted in upper 32 px, side face in lower 28 px.
 
-**Hazard — Fire.** Dark charred base. 5–8 bright orange-yellow ember dots scattered. 2–3 tiny flame shapes (3px-tall triangles).
+For stacked tiles (`Tile.height > 1`), the **renderer repeats the side face** `(height − 1)` additional times beneath the authored tile. The artist ships ONE PNG per terrain type; the renderer stacks. Side-face hash-seeded detail placement per stack layer keeps adjacent stacks from looking like a single extruded block.
 
-**Hazard — Acid.** Dark bile-green base `#1a2a1a`. 3–4 bubbling circles (3–4px sickly green `#4aaa3a` with `#2a5a1a` shadow). 1–2 "bubble" highlights: 1px cold-highlight `#ccccdd` wet-shine dot per bubble (never pure white).
+### 14.4 Camera-Rotation Hash-Seeding (v2)
 
-**Hazard — Void.** Deep purple-black. 2–3 curved lighter-purple lines radiating from center, suggesting a swirl.
+One PNG per terrain type; the renderer applies the iso-rotation transform. Per-tile cosmetic detail (moss tufts, crack direction, ember dots, acid bubbles, swirl centers) is **hash-seeded on `(x, y, cameraRotation)`** — not just `(x, y)` — so that at any rotation the detail distribution reads naturally and adjacent tiles don't duplicate. A `pixelArt.ts` utility in `src/client/` owns this hash; don't re-invent it per renderer.
 
-**Shadow Tile.** Very dark purple-black `#0e0e1e` base. 2–3 curved thin wispy lines in slightly lighter purple `#1a1a3a`. Occasional shimmer: 1px high-alpha cold-highlight `#ccccdd` dot in one hash-seeded position (never pure white).
+### 14.5 Terrain Catalog (one line per type — full pixel anatomy in ART_SPEC §6)
 
-**Corrupted.** Dark red-black `#3a1a1a` base. 3–4 branching vein lines in Blood primary `#8b0000` at ~50% alpha radiating from center, ending in a 1px Blood-highlight `#cc2222` pulse pixel. Hash-seeded per-tile pulse variation so adjacent tiles don't look identical. Never use saturated `#ff0000`-class red.
+- **Stone (default):** warm gray-brown `#4a4550` base, masonry seam lines forming brick-bond, occasional moss or crack on ~25 % of tiles.
+- **High Ground:** sandy-earth top face with horizontal grain, small grass tufts along diamond edges, 1 px bright upper-left edge highlighting the raised lip.
+- **Rubble:** 3–5 irregular stone chunks scattered, each with upper-left highlight + lower-right shadow, darker and more chaotic than Stone.
+- **Hazard — Fire:** charred `#2a1a14` base, 5–8 ember dots, 2–3 tiny upright flame triangles.
+- **Hazard — Acid:** dark bile-green `#1a2a1a` base, 3–4 bubbling circles with wet-shine specular dot on each bubble.
+- **Hazard — Void:** deep purple-black base, 2–3 curved `#4a2288` swirl lines radiating from center.
+- **Pillar:** stone column centered on diamond, rising from top face, obviously a wall (not a step-up).
+- **Wall:** full-tile-width dark stone block with horizontal mortar banding every 6 px.
+- **Shadow Tile:** very dark `#0e0e1e` base, 2–3 curved wispy purple lines, one hash-placed `#ccccdd` shimmer dot.
+- **Corrupted:** dark red-black `#3a1a1a` base, 3–4 branching `#8b0000` vein lines ending in a `#cc2222` highlight pulse.
 
-**Pillar / Wall.** Pillar: stone column rectangle centered on diamond, lighter top cap, darker side panels, visible 1px stone-block horizontal lines on the front face. Wall: full-width dark stone with horizontal mortar banding.
+### 14.6 Rendering Constraints
 
-### 21.4 Tile Depth (the iso cube)
+- `PIXI.SCALE_MODES.NEAREST` globally.
+- `image-rendering: pixelated` CSS on the canvas element.
+- All sprite positions rounded to integer pixels at render (sub-pixel positions blow up as anti-aliased fuzz).
+- No PixiJS filters that smooth (blur, noise, bevel). ColorMatrixFilter for desaturation and tint is fine — it's per-pixel, not interpolating.
+- **Tile rotation is implemented via the scene-graph-root transform, NOT per-tile sprite rotation.** Per-tile rotation would force texture resampling and break NEAREST.
 
-Each tile renders with `TILE_DEPTH = 28px` of side face visible below the diamond top. Side faces use the same material but 30–40% darker, with 1–2px stone-block lines suggesting layered masonry. Upper-left edge of the top diamond gets a 1px bright highlight; lower-right gets a 1px shadow line. This is the FFT silhouette.
+### 14.7 Reference
 
----
-
-## 22. Art Direction — Champions
-
-Each champion sprite is drawn on a 64×64 canvas. Character fills ~24×40px centered in the canvas; weapons extend outward beyond that. Anchor point: center-bottom (0.5, 1.0); feet touch rows 60–62. Every sprite has a ground shadow: 20×6px ellipse at alpha 0.3, drawn under the feet.
-
-All sprites face right by default. The renderer flips horizontally for left-facing.
-
-### 22.1 Ashen Knight
-
-**Silhouette:** Stocky armored warrior. Wide shoulders, squat, grounded. Reads as "immovable wall." Silhouette identifier: red plume on top of the helmet — the one hot color on a grim metal figure.
-
-**Parts (bottom-up):**
-- Boots: 2px wide × 4px tall, dark steel `#3a3a4a`, visible sole line.
-- Legs: 3px wide each, 6px tall, segmented plate with horizontal knee-joint line.
-- Torso: 8×8px breastplate, steel `#5a5a6a`, center vertical line, gold trim pixels `#bba040` on edges.
-- Pauldrons: 3px bulges on each shoulder, slightly lighter than torso.
-- Head: 6×6px great helm with T-shaped visor slit (1px horizontal + 1px vertical dark). Faint red glow `#cc2222` in visor slit (2×2px).
-- Red plume: 2px crimson `#cc2222` accent on top of the helm.
-- Sword: straight longsword in right hand. 2px wide blade extending 12px upward. Blade steel `#ccccdd`. Crossguard 4px horizontal gold `#bba040`. Pommel 1px.
-- Shield: kite shield on left arm. Dark steel face with gold cross emblem.
-- Cape/tabard: 3px wide hanging 4px behind shoulders, stone-shadow `#3a3a48`.
-
-**Color table:** see §21.2 for palette. Always outline the silhouette with 1px dark `#1a1a20` for readability against any background.
-
-### 22.2 Pale Mage
-
-**Silhouette:** Tall, narrow, pointed-top triangle from the hood. Reads as "cloaked figure." Silhouette identifiers: hood shape and glowing orb above the head.
-
-**Parts (bottom-up):**
-- Feet: pointed 2px, hidden under robe hem.
-- Robes: floor-length, 10px base / 6px waist. Arcane-cloth primary `#2a2a5a` for the field, with `#1a1a38` (Arcane-cloth shadow) used for 2–3 horizontal fold lines. Tattered bottom edge (irregular pixels). Note: primary on the larger surface, shadow on folds — do not invert.
-- Hood: tall pointed hood, 5px at base, point 4px above head. `#2a2a5a` with `#1a1a38` inner shadow.
-- Face: mostly hidden. Only two pale-arcane eye dots visible `#88aaff`, 3×2px each. No visible mouth or nose.
-- Hands: thin pale cold-highlight `#aaaacc` visible at robe openings; right grips staff.
-- Staff: 1px wooden pole `#6a5a3a`, 14px tall, extending above head in right hand.
-- Orb: 4×4px purple-violet core in Magic primary `#6633aa`, with the upper-left 2×2 quadrant brightened to Magic highlight `#8866ff` to suggest internal glow. 1px specular highlight in cold-highlight `#ccccdd` (never pure white — see §21.2). 2px-radius soft aura around the orb in `#8866ff` at 0.5 alpha. All four colors are on-palette; no off-palette violet drift toward blue.
-- Arcane runes: 2–3 small blue `#4466cc` rune dots on robe front.
-
-### 22.3 Heretic
-
-**Silhouette:** Hunched, asymmetric. Not upright. Reads as "predatory creature." Silhouette identifiers: two curved horns, glowing red eyes, no weapon (hands are the weapon).
-
-**Parts (bottom-up):**
-- Boots: Earth shadow `#2a1a0a`, slightly pointed.
-- Legs: dark cloth/strap wraps, alternating `#2a1a1a` (rust-black) and near-black pixels in a stripe pattern.
-- Torso: Blood shadow `#5a0000` hunched forward, with darker pixel noise. 2–3 horizontal ribcage-lighter lines in Blood primary `#8b0000` suggest bone underneath.
-- Arms: `#2a1a1a` going to Earth highlight `#5a4a3a` at the bone gauntlets. Claw-like finger extensions (2–3px pointed) at each hand. Bone is warm off-white in the Earth-highlight neighborhood — never pure white.
-- Head: bald, `#2a1a1a`, low-jutting.
-- Horns: two 3px curved horns extending up and outward from the skull, Blood shadow `#5a0000` going to Blood primary `#8b0000` at the tips.
-- Eyes: 2×1px each, 2px apart, Blood/ember highlight `#cc2222` (feral, brighter than Knight's visor glow).
-- Ritual sigils: 2–3 glowing pixels `#cc2222` on chest (Blood/ember highlight, never `#ff0000` saturated).
-- Cloth strips: dark tattered strips from waist, alternating dark tones.
-
-### 22.4 Animation Sheets
-
-Horizontal-strip PNG files, one per animation. Each frame is 64×64. Layout: frame 0 on the left, read left-to-right. Transparent background. Knight ships seven sheets (no cast/channel — reuses `attack.png` for ability telegraphs). Mage and Heretic ship eight sheets each (Mage's extra is `cast.png`, Heretic's is `channel.png`). Hit flash uses a shader tint at runtime, not a white-painted frame.
-
-| Sheet | Frames | Purpose | Notes |
-|-------|--------|---------|-------|
-| `{champ}_idle.png` | 4 | Loop. Subtle breathing: 1px chest rise/fall. | Primary sprite, on-screen 90% of match. |
-| `{champ}_walk.png` | 6 | Loop. March cycle. | Knight heavy/grounded, Mage floating, Heretic stalking. |
-| `{champ}_attack.png` | 5 | One-shot. Wind-up → strike → recovery. | Hit resolves on frame 3. |
-| `{champ}_hit.png` | 3 | One-shot. Recoil + recover. | Renderer applies a 1-frame white tint via ColorMatrixFilter on frame 1. |
-| `{champ}_death.png` | 4 | One-shot; holds on last frame (index 3). | Desaturated palette shift, applied as ColorMatrixFilter (no recolored frames). |
-| `{champ}_defend.png` | 2 | Held while Defend/Shield Wall status active. | Not a loop; hold last frame (index 1). |
-| `{champ}_cast.png` (mage) / `{champ}_channel.png` (heretic) | 4 | One-shot for ability activations; returns to idle on last frame (index 3). | Knight does not ship this sheet. |
-| `{champ}_kneel.png` | 4 | One-shot; holds on last frame (index 3) for the 3s Coward's Brand. | Surrender animation. |
-
-Frame indices are 0-based throughout (attack hit resolves on frame 3 of 0–4; hit flash on frame 1 of 0–2).
-
-### 22.5 Ability VFX Sprites (separate files)
-
-| Sprite | Size | Frames | Description |
-|--------|------|--------|-------------|
-| `vfx_slash_arc.png` | 64×32 | 3 | White/steel sword arc. Thin line → full crescent → fading trail. Knight basic attack + Vanguard Charge. |
-| `vfx_shield_wall.png` | 64×64 | 1 | Translucent blue-steel rectangular shield with runic glowing edges. Held while Shield Wall active. |
-| `vfx_charge_dust.png` | 32×32 | 4 | Brown-gray dust cloud puff trail. Behind Knight during Vanguard Charge. |
-| `vfx_cinder_bolt.png` | 32×32 | 4 | Orange-yellow fireball projectile. Compact → elongated tail → wider → impact burst. |
-| `vfx_ash_cloud.png` | 96×96 | 1 (code-rotated) | Dark swirling smoke mass. Wispy edges, darker center. |
-| `vfx_blink_flash.png` | 48×48 | 2 | Purple implosion at origin → explosion at destination. |
-| `vfx_blood_orb.png` | 16×16 | 3 | Red blood droplet. Round → elongated → dissipate. Blood Tithe sacrifice. |
-| `vfx_hex_rune.png` | 48×48 | 1 | Red arcane trap rune circle. Flashes on placement, then hidden. |
-| `vfx_hex_explode.png` | 64×64 | 3 | Red trap trigger explosion. Burst → max radius with rune → sparks. |
-| `vfx_desecrate.png` | 96×96 | 1 (code-pulsed) | Red corruption veins spreading on ground. Top-down tile overlay. |
-| `vfx_iron_stance.png` | 48×48 | 1 | Golden runic aura circle at Knight's feet while active. |
-| `vfx_hit_sparks.png` | 32×32 | 3 | Orange/white impact sparks burst. |
-
-### 22.6 Pickup & Perk Icon Sprites
-
-Pickup sprites: 32×32 PNG on battlefield tiles. See §16 for list.
-
-Perk icons: 32×32 PNG, shown on the Perk Draft cards. Iconography:
-- Bloodlust: red dripping sword
-- Second Wind: green swirl arrows
-- Scout's Eye: golden eye with radiating lines
-- Energy Surge: blue lightning bolt
-- Thick Skin: gray armor plate
-- Ghost Step: faded footprint
-- Trap Sense: red `!` in triangle
-- Ash Walker: orange footprint on flames
-- First Strike: gold sword with speed lines
-- Last Stand: cracked red heart
-- Mist Cloak: purple cloak with fog wisps
-- Fortify: stone tower
-- Long Reach: extended arrow
-- Pillager: gold coins
-- Counterspell: purple broken circle
-- Vampiric Touch: red fangs
-
-### 22.7 HUD & UI
-
-- **Portraits:** 80×80 PNG per champion (`portrait_knight.png`, `portrait_mage.png`, `portrait_heretic.png`). Head-and-shoulders composition with ornate gothic-gold 2px frame baked in (HUD does not re-frame). Class-specific dimmed radial background. Plus two variants per champion delivered as separate PNGs:
-  - `portrait_{champ}_dim.png` — desaturated + 30% darker, for eliminated players in the bracket.
-  - `portrait_{champ}_cracked.png` — shattered-glass overlay for the Coward's Brand (§17).
-- Energy pips: 12×12. `hud_energy_pip_filled.png` (blue-gem) + `hud_energy_pip_empty.png` (dark socket). Render up to 6 in a row (5 default, 6 with Energy Surge).
-- Turn banners: 128×32. `hud_turn_banner.png` ("YOUR TURN", gold gothic) and `hud_enemy_turn_banner.png` (dimmer variant).
-- Turn timer frame: 48×16 stone-inset bracket (`hud_timer_frame.png`); the countdown digits themselves are pixel-font at runtime.
-- Tile cursors: 64×32 iso diamonds — `cursor_select.png` (gold `#bba040`), `cursor_attack.png` (blood `#cc2222`), `cursor_move.png` (cold-highlight `#aaaacc`), `cursor_ability.png` (magic `#8866ff`).
-- Status icons: 16×16 — `status_defending.png`, `status_shield_wall.png`, `status_iron_stance.png`, `status_revealed.png`, `status_stunned.png`.
-- Ability slot icons: 32×32, 9 total (3 per class) under `public/sprites/abilities/` — Knight = geometric/heraldic motifs, Mage = astral/arcane, Heretic = organic/gore.
-- Title logo: 512×128 `logo_dark_council_tactic.png`, "DARK COUNCIL TACTIC" gothic pixel typeface in gold `#bba040` with dark outline `#1a1a20`.
-
-Full artist-facing canvas specs, anatomy, and palette detail live in `ART_SPEC.md`. If that file and this section disagree, this section wins and ART_SPEC gets patched.
+Full pixel anatomy per tile, palette bins with exact positioning rules, and QA checklists live in `ART_SPEC.md` (currently v1.3, §6). ART_SPEC v2 will extend each tile entry with its stack-side and per-rotation detail rules.
 
 ---
 
-## 23. Audio Direction
+## 15. Art Direction — Champions
+
+### 15.1 Silhouette Identity
+
+Every champion must be instantly identifiable from a 32-pixel-tall solid-black silhouette. If you squint and can't name the class, the silhouette fails.
+
+- **Ashen Knight** — squat and wide (pauldrons), crimson plume spiking up from a great helm, greatsword held high, kite shield on the left arm. Metal-heavy. Reads: immovable wall.
+- **Pale Mage** — tall, narrow, pointed hood apex, glowing orb on a staff floating above head-level, floor-length robe with tattered hem. Cloth-heavy. Reads: cloaked sorcerer.
+- **Heretic** — hunched and asymmetric, two curved horns out and up from skull, bone-gauntlet claws, no weapon silhouette (hands are the weapon), ragged waist strips. Flesh-and-bone. Reads: predator.
+
+### 15.2 Canvas & Anchor
+
+- **Canvas:** 64 × 64 PNG, transparent background.
+- **Body footprint:** roughly central 24–28 px wide × 40 px tall. Weapons, hoods, plumes, staves extend outside that box into the full 64 × 64.
+- **Anchor:** center-bottom, `(0.5, 1.0)`. Feet touch y-rows 60–62 on every frame across every animation and every facing. Depth-sort breaks if feet drift.
+- **Ground shadow:** 20 × 6 px ellipse at `alpha 0.3`, `#0a0a15`, baked into the sprite (renderer does not add it).
+
+### 15.3 Four-Facing Rules (v2)
+
+**This is the defining v2 change.** FFT uses four hand-painted sprite orientations per pose, not two-facings-mirrored. The Knight's shield lives on the left arm in world space, and mirroring puts it on the wrong arm.
+
+Four camera-relative sprite orientations ship per animation:
+
+| Suffix | Character orientation on screen | World meaning (at camera rotation 0°) |
+|--------|---------------------------------|--------------------------------------|
+| `_se` | 3/4 front, facing screen-down-right | Unit facing E or S in world |
+| `_sw` | 3/4 front, facing screen-down-left | Unit facing W or S in world |
+| `_ne` | 3/4 back, facing screen-up-right | Unit facing E or N in world |
+| `_nw` | 3/4 back, facing screen-up-left | Unit facing W or N in world |
+
+The renderer chooses among the four based on `unit.facing` rotated by current `cameraRotation`. No mirroring at runtime. No tween between facings — facing changes snap on the frame immediately before the action animation plays.
+
+**Cross-facing consistency:**
+
+- The Knight's shield stays on the LEFT arm in world space (camera-near side in SW/NE, camera-far side in SE/NW).
+- The sword stays in the RIGHT hand.
+- Crimson plume is visible from all four angles.
+- Light comes from upper-left in screen space regardless of facing — highlights land on the character's back in NE / NW.
+- Cape / tabard visible from behind (NE / NW fully, peeking in SE / SW).
+- In NE / NW (back views) where the visor/face isn't visible, paint helm seams and rivet patterns so the helm reads as a helm, not a smooth egg.
+
+### 15.4 Animation Sheet Catalog
+
+Horizontal-strip PNG files, one per animation, one per facing. Each frame 64 × 64. Frame 0 leftmost, read left-to-right. Transparent background, tightly packed (no frame gaps).
+
+File naming: `{champ}_{animation}_{facing}.png` where `{champ}` ∈ `{knight, mage, heretic}`, `{facing}` ∈ `{se, sw, ne, nw}`.
+
+| Sheet | Frames | Type | Notes |
+|-------|--------|------|-------|
+| `{champ}_idle_{facing}.png` | 4 | Loop | Subtle breathing. 1 px chest rise/fall. |
+| `{champ}_walk_{facing}.png` | 6 | Loop | Class-weighted march. Knight heavy, Mage gliding, Heretic stalking. |
+| `{champ}_attack_{facing}.png` | 5 | One-shot | Hit resolves on frame index 3. Ends on 4, returns to idle. |
+| `{champ}_hit_{facing}.png` | 3 | One-shot | Recoil + recover. White tint applied by ColorMatrixFilter at runtime — DO NOT paint a white flash. |
+| `{champ}_death_{facing}.png` | 4 | One-shot | Collapse. Holds on frame index 3. Desaturation by ColorMatrixFilter — DO NOT repaint in gray. |
+| `{champ}_defend_{facing}.png` | 2 | Held | Frame 0 raise, frame 1 braced. Parks on frame 1 for duration. |
+| `{champ}_cast_{facing}.png` (Mage) or `{champ}_channel_{facing}.png` (Heretic) | 4 | One-shot | Ability activation. Knight does NOT ship this — ability telegraphs reuse `attack`. |
+| `{champ}_kneel_{facing}.png` | 4 | One-shot | Surrender. Weapon drops at the side on frame 2. Holds on frame 3 for the 3-second Coward's Brand. |
+
+**Total sheet count at full 4-facing:**
+
+- Knight: 7 animations × 4 facings = **28 sheets**.
+- Mage: 8 animations × 4 facings = **32 sheets**.
+- Heretic: 8 animations × 4 facings = **32 sheets**.
+- **Grand total: 92 champion sprite sheets.**
+
+### 15.5 Frame Timings (baked into engine, not into sprite)
+
+Useful for timing wind-ups and follow-throughs in the sprite. Engine plays at:
+
+- Idle: 200 ms / frame
+- Walk: 120 ms / frame
+- Attack: 80 ms / frame (fast snap)
+- Hit: 60 ms / frame
+- Death: 150 ms / frame; hold last
+- Defend: 100 ms transition; hold frame 1 indefinitely
+- Cast / Channel: 120 ms / frame
+- Kneel: 180 ms / frame; hold frame 3 for 3 s
+
+### 15.6 Reference
+
+Full anatomy per champion (part-by-part pixel specification, palette bins, silhouette sanity check) lives in `ART_SPEC.md` §5 + §7. ART_SPEC v2 will add per-facing anatomy notes for SW / NE / NW (the reinterpretations of §5's SE-default anatomy).
+
+---
+
+## 16. Art Direction — VFX, HUD, Portraits, Icons, Logo
+
+Everything visual that isn't terrain or champions. One line per item; anatomy in ART_SPEC.
+
+### 16.1 Ability VFX Sprites
+
+Transparent PNG, center anchor unless noted. File name: `vfx_<effect>.png`.
+
+| File | Canvas | Frames | Use |
+|------|--------|--------|-----|
+| `vfx_slash_arc.png` | 64 × 32 | 3 | Knight basic attack + Vanguard Charge hit |
+| `vfx_shield_wall.png` | 64 × 64 | 1 (bottom-center anchor) | Held in front of Knight while Shield Wall active |
+| `vfx_charge_dust.png` | 32 × 32 | 4 (bottom-center anchor) | Behind Knight during Vanguard Charge |
+| `vfx_cinder_bolt.png` | 32 × 32 | 4 | Mage Cinder Bolt projectile |
+| `vfx_ash_cloud.png` | 96 × 96 | 1 (engine-rotated + pulsed) | Ash Cloud overlay |
+| `vfx_blink_flash.png` | 48 × 48 | 2 | F0 implosion at origin, F1 explosion at destination |
+| `vfx_blood_orb.png` | 16 × 16 | 3 | Blood Tithe sacrifice droplet |
+| `vfx_hex_rune.png` | 48 × 48 | 1 | Trap rune on placement (engine-fades, then hidden) |
+| `vfx_hex_explode.png` | 64 × 64 | 3 | Trap trigger burst |
+| `vfx_desecrate.png` | 96 × 96 | 1 (engine-pulsed) | Corruption vein overlay on 2×2 |
+| `vfx_iron_stance.png` | 48 × 48 | 1 (bottom-center anchor) | Golden aura at Knight's feet while active |
+| `vfx_hit_sparks.png` | 32 × 32 | 3 | Impact sparks after every attack |
+
+**12 VFX files total.** Engine handles alpha fading, rotation, pulsing, scaling — deliver full-opacity static frames, no pre-baked fades.
+
+### 16.2 Battlefield Pickups
+
+32 × 32 PNG each. No animation (engine pulses alpha/scale at render).
+
+- `pickup_health_flask.png` — ornate glass vial, blood-red liquid, metal-banded neck.
+- `pickup_energy_crystal.png` — sharp-cut Magic-violet gem, faintly self-lit.
+- `pickup_scroll_of_sight.png` — rolled parchment, gold cord, eye sigil.
+- `pickup_chest.png` — dark iron-banded wooden chest with skull-motif lock.
+
+**4 pickup files total.**
+
+### 16.3 Perk Icons
+
+32 × 32 PNG each, dark-framed (paint a subtle dark circle/banner behind the motif — icons are not floating on transparent). One focal motif per icon. No text in the icon; pixel-font text is rendered separately at runtime.
+
+All 16 perks per §8.2: Bloodlust, Second Wind, Scout's Eye, Energy Surge, Thick Skin, Ghost Step, Trap Sense, Ash Walker, First Strike, Last Stand, Mist Cloak, Fortify, Long Reach, Pillager, Counterspell, Vampiric Touch.
+
+**16 perk-icon files total.**
+
+### 16.4 Ability Slot Icons
+
+32 × 32 PNG each, shown in the match HUD action bar. Motif grammar per class: Knight = geometric/heraldic, Mage = astral/arcane, Heretic = organic/gore.
+
+- Knight: `ability_knight_shield_wall.png`, `ability_knight_vanguard_charge.png`, `ability_knight_iron_stance.png`.
+- Mage: `ability_mage_cinder_bolt.png`, `ability_mage_ash_cloud.png`, `ability_mage_blink.png`.
+- Heretic: `ability_heretic_blood_tithe.png`, `ability_heretic_hex_trap.png`, `ability_heretic_desecrate.png`.
+
+**9 ability-icon files total.**
+
+### 16.5 Portraits
+
+80 × 80 PNG head-and-shoulders composition at higher detail than the 64 × 64 sprites. Class-specific dimmed radial background. 2 px gothic-gold pointed-arch frame baked into the PNG edge — HUD does not re-frame.
+
+Per champion, three variants:
+
+- `portrait_{champ}.png` — base.
+- `portrait_{champ}_dim.png` — desaturated + 30 % darker, for eliminated-player bracket slots.
+- `portrait_{champ}_cracked.png` — shattered-glass overlay for the Coward's Brand (§8.5).
+
+**9 portrait files total** (3 champs × 3 variants).
+
+### 16.6 HUD Widgets
+
+Transparent PNG, composited by PixiJS. Positions placed by code.
+
+- `hud_energy_pip_filled.png` (12 × 12), `hud_energy_pip_empty.png` (12 × 12) — up to 6 in a row.
+- `hud_turn_banner.png` (128 × 32) "YOUR TURN" gold-ink gothic; `hud_enemy_turn_banner.png` dimmer variant.
+- `hud_timer_frame.png` (48 × 16) stone-inset bracket; countdown digits rendered with pixel-font at runtime.
+- `cursor_select.png`, `cursor_attack.png`, `cursor_move.png`, `cursor_ability.png` (64 × 32 diamond overlays) — gold / red / cold-blue / violet respectively.
+- Status icons (16 × 16 each): `status_defending.png`, `status_shield_wall.png`, `status_iron_stance.png`, `status_revealed.png`, `status_stunned.png`.
+
+**~13 HUD files total.**
+
+### 16.7 Title Logo
+
+`logo_dark_council_tactic.png` — 512 × 128, "DARK COUNCIL TACTIC" in gothic pixel blackletter. Gold ink `#bba040`, 1 px `#1a1a20` outline, 1 px `#0a0a15` drop shadow. Distressed letterforms — looks forged, not typed.
+
+**1 logo file.**
+
+### 16.8 Pixel Font
+
+Single pixel-art gothic font (e.g. "m5x7", "Pixeled", or similar public-domain) embedded at runtime. Engineering picks and embeds. Sprite artist does NOT deliver a font.
+
+### 16.9 Asset Totals (visual)
+
+Rough count of what ships at v2.0 submission, pre-audio:
+
+- Champion sprite sheets: **92**
+- Terrain tiles: **10** (renderer stacks for height)
+- Ability VFX: **12**
+- Pickups: **4**
+- Perk icons: **16**
+- Ability slot icons: **9**
+- Portraits: **9**
+- HUD widgets: **13**
+- Title logo: **1**
+
+**~166 PNG files total.** Refer to ART_SPEC v2 §14.9 batch delivery (forthcoming) for sequencing.
+
+---
+
+## 17. Audio Direction
+
+Silence is scarier than noise. The soundtrack is minimal and oppressive; the SFX is sharp and physical.
+
+### 17.1 Philosophy
 
 Ambient: low wind, distant thunder, crackling embers. Oppressive, never busy.
 
-Combat SFX: metallic clash (Knight), arcane whoosh (Mage), wet corruption squelch (Heretic). Sharp attack envelopes — this is a snappy tactical game.
+Combat SFX: metallic clash (Knight), arcane whoosh (Mage), wet corruption squelch (Heretic). Sharp attack envelopes — snappy, tactical, not cinematic.
 
 UI SFX: stone-on-stone click for menu interactions. Deep bell toll for turn start and surrender.
 
-Music philosophy: minimal. Slow droning cello or choir hum during matches. Silence is scarier than noise.
+Music: slow droning cello or choir hum during matches. Long holds. Silence is the default — music fills the air only when the tension calls for it.
 
-### 23.1 Tracks (jam minimum)
+### 17.2 Music Tracks (jam minimum: 6)
 
-1. **Main menu / lobby** — slow brooding ambient, low strings, distant choir. Target length: ~2-minute loop.
-2. **Combat, early turns** — tense, minimal, sparse percussion, droning cello. ~90 BPM.
-3. **Combat, late / low HP** — intensifies: faster tempo, more percussion, dissonant strings. Triggered when either player drops below 30% HP.
-4. **Perk draft / bracket** — brief atmospheric sting, 10–15 seconds.
-5. **Victory** — dark triumphant brass swell, 5–10 seconds.
-6. **Defeat / Surrender** — mournful. Single low bell, fading strings. 5–8 seconds.
+1. **Main menu / lobby.** Slow brooding ambient, low strings, distant choir. ~2 min loop.
+2. **Combat — early turns.** Tense, minimal, sparse percussion, droning cello. ~90 BPM. Loop.
+3. **Combat — late / low HP.** Intensifies: faster tempo, more percussion, dissonant strings. Triggered when either player drops below 30 % HP. Loop.
+4. **Perk draft / bracket.** Brief atmospheric sting, 10–15 s.
+5. **Victory.** Dark triumphant brass swell, 5–10 s.
+6. **Defeat / surrender.** Mournful. Single low bell, fading strings, 5–8 s.
 
-### 23.2 SFX List
+### 17.3 SFX Catalog (jam minimum)
 
 - Sword clash (Knight attacks)
 - Arcane whoosh + fire crackle (Mage abilities)
@@ -993,188 +1402,390 @@ Music philosophy: minimal. Slow droning cello or choir hum during matches. Silen
 - Chest open creak (pickup)
 - Crowd murmur (ambient tournament, louder in finals)
 
-### 23.3 Tooling
+### 17.4 Tooling
 
-Music: Beatoven.ai primary (game-dev loop-aware). Backup: aimusic.so for pre-made dark fantasy placeholders.
+Music: Beatoven.ai primary (game-dev loop-aware). Backup: aimusic.so for pre-made dark-fantasy placeholders.
 
-SFX: SoundsGen and Freesound.org under permissive licenses. All audio files in `public/audio/` only. `SoundManager.ts` is the only thing that plays audio. No `new Audio()` calls anywhere else in the client.
+SFX: SoundsGen and Freesound.org under permissive licenses.
 
----
+### 17.5 Audio Delivery
 
-## 24. Production Pipeline
+- Music: `.ogg`, 44.1 kHz, stereo. Naming: `music_<purpose>.ogg` (e.g. `music_combat.ogg`, `music_victory.ogg`).
+- SFX: `.ogg`, 44.1 kHz, mono. Naming: `sfx_<action>.ogg` (e.g. `sfx_sword_clash.ogg`, `sfx_bell_toll.ogg`).
+- All audio files live in `public/audio/` only.
 
-**Sprites.** Silhouette generation in PixelLab (or similar AI pixel tool) — use as a starting concept only. Refine and polish in Aseprite: hand-edit every pixel, confirm color palette adherence, export as horizontal-strip PNG with transparent background. Naming: `{champ}_{animation}.png`. Import into `public/sprites/`.
+### 17.6 Audio Surface
 
-**Terrain tiles.** Drawn directly in Aseprite using the palette in §21.2. Each terrain type is one 64×32 diamond PNG. Deterministic per-tile variation comes from a hash function in `pixelArt.ts` (keep this utility around) so adjacent tiles don't repeat.
-
-**Music.** Beatoven.ai for loops. Export as `.ogg`, 44.1kHz, stereo. Name by track purpose: `music_lobby.ogg`, `music_combat.ogg`, etc.
-
-**SFX.** Short one-shots, 44.1kHz mono, `.ogg`. Name by action: `sfx_sword_clash.ogg`, `sfx_bell_toll.ogg`, etc.
-
-**Meshy / 3D generators.** Do not use. This is a 2D pixel-art game.
+`src/client/audio/SoundManager.ts` is the ONLY thing that plays audio. No `new Audio()` calls, no `<audio>` tags, no PixiJS sound plugin direct calls elsewhere in the client. If a scene needs a new cue, it asks `SoundManager`.
 
 ---
 
-## 25. Workflow Rules
+## 18. Production Pipeline
 
-**Branches.** One branch per small feature. Naming: `<agent>/m<milestone>-<slug>`, e.g. `kai/m2-move-action`, `fernando/m9-knight-sprites`, `cursor/m13-hud-polish`. Lifespan target: under three days. A branch open more than a week is a smell.
+### 18.1 Asset Creation Workflow
 
-**Commits.** Conventional-ish. Prefix with area when useful: `server:`, `client:`, `shared:`, `ci:`, `art:`. Body explains *why* when the *what* isn't obvious from the diff.
+**Champion sprites.** Designer agent (ChatGPT or similar) generates initial 1× PNG drafts following ART_SPEC. Fernando reviews at 1×, 3×, 4× zoom. If approved, Kai imports into `public/sprites/champions/`. If rejected, designer iterates on the existing PNG — do not start from scratch. Every sprite may receive a polish pass in Aseprite before shipping (hand-edit pixels, palette verification, clean-up).
 
-**PRs.** Target `main` only. Description must name which milestone it serves and which smoke gate it affects. Required checks: `typecheck`, `test:unit`, `test:smoke`. No force-pushes to `main`. No merges that skip CI. No `--no-verify`.
+**Terrain tiles.** Drawn directly in Aseprite using the palette in §14.2. One 64 × 60 PNG per terrain type (the renderer stacks for height). The per-tile hash-seeded variation happens at runtime via `pixelArt.ts` — don't ship N variants per type.
 
-**Serial work.** For any given file in `src/`, only one agent may be editing it in an open branch at a time. If two agents want to touch the same file, coordinate in chat before starting. No exceptions through M13. Revisit after submission.
+**VFX.** Designer agent for initial drafts, Aseprite for polish. No pre-baked fades or rotations — engine handles those.
 
-**Typecheck gate.** `npm run typecheck` must be green before every commit. Banned: `@ts-ignore`, `any` in non-test code, `as any` casts, unchecked index access. If a PixiJS event type is intentionally broad, cast at the boundary and narrow immediately.
+**HUD, portraits, icons, logo.** Aseprite direct. Portraits and the logo are Hero Moments (§2.2) — disproportionate time budget.
 
-**Smoke gate.** `npm run test:smoke` must be green before every merge. The smoke test boots the server, opens two Playwright-controlled browsers, walks through lobby → match → one action → asserts the action took effect. If it fails, the build is broken, not the test. Fix the build.
+**Music.** Beatoven.ai generates loops. `.ogg` export, 44.1 kHz, stereo. Short sanity-check pass for loop seam artifacts before committing.
 
-### 25.1 Dev Ergonomics
+**SFX.** Freesound / SoundsGen search, crop to one-shot, normalize, `.ogg` export at 44.1 kHz mono.
 
-Cheap tools that save days. Build once, use every session.
+### 18.2 Batch Delivery (tied to milestones)
 
-**Debug overlay.** Press <kbd>F3</kbd> in a match scene: shows current `turnNumber`, `eventId` of last state, your fog-filtered unit list, server round-trip time, current scene name. Hidden from all other scenes. Toggle persists for the session only. Gated behind `import.meta.env.DEV` — stripped from production bundles.
+Art arrives in batches gated by milestone. Each batch reviewed by Fernando as a set — partial batches don't ship.
 
-**Dev cheats (DEV builds only).** `?dev=1` query param enables: <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> to force your class, <kbd>G</kbd> to grant +5 energy this turn, <kbd>K</kbd> to kill the opponent (debug match-end path), <kbd>L</kbd> to toggle the fog overlay off (to visually debug positioning). Server still validates — cheat keys emit tagged actions the server only accepts when `NODE_ENV !== 'production'`.
+- **Batch 1 (M8):** All 10 terrain tile types. Nothing else.
+- **Batch 2 (M9):** All 92 champion sheets + all 12 VFX. This is the art-work mountain — spec'd carefully, iterated aggressively per §18.3.
+- **Batch 3 (M9 polish):** 5 status icons; damage-number styling confirmation.
+- **Batch 4 (M10):** 16 perk icons + 9 ability icons.
+- **Batch 5 (M11):** 4 pickup sprites.
+- **Batch 6 (M12):** 9 portrait files (3 base + 3 dim + 3 cracked).
+- **Batch 7 (M13):** HUD widgets (13 files) + title logo (1).
 
-**Local 1v1.** `npm run dev` opens two browser tabs automatically (via Vite config) for fast local testing without a second device.
+Audio batches interleave with M13 scope (all music and SFX land before submission; no audio in M8–M12 visual work).
 
-**Deterministic match seed.** `?seed=<uint>` on the client URL forces the match RNG seed (coin flip, perk shuffle, arena pick). Test flows and playtest recordings rely on this to reproduce outcomes. Server accepts the seed only when `NODE_ENV !== 'production'`.
+### 18.3 Iteration Protocol
 
-**Hot reload.** Vite HMR for the client. Server uses `tsx watch` — full reload on server file change. Active matches drop on server reload (expected in dev). Don't try to build state migration into dev reload; it's not worth the complexity for a jam.
+1. Agent reads ART_SPEC end to end plus the subsection for the asset being produced.
+2. Agent produces **one asset** (or a tightly scoped batch, e.g. "Knight idle SE only") at 1× PNG. Agent runs ART_SPEC §15 QA checklist internally.
+3. Agent delivers the PNG plus a one-paragraph note: distinct color count, any palette additions beyond §14.2 (with justification), any spec ambiguities resolved by judgment call.
+4. Fernando reviews at 1×, 3×, 4×. Approves, rejects, or requests changes.
+5. If changes requested: agent iterates on the existing file, does NOT start from scratch. Preserve what worked.
+6. On approval: Kai commits to `public/sprites/` in the repo and marks done in the batch tracker (§18.2).
+
+**Do NOT produce speculative variants.** One careful, spec-compliant version at a time. Iteration quality beats volume.
+
+### 18.4 Handoff Chain
+
+Designer agent (ChatGPT) ↔ Fernando (art director, final approval) ↔ Kai (commits to repo, maintains ART_SPEC, raises engineering concerns if an asset won't render).
+
+Three-way conversation lives in chat, not in git. The git history records the outcome: commits to `public/sprites/`, updates to ART_SPEC. Scratchpad discussion stays out of the repo root (per §13.5 trap list).
+
+### 18.5 Hero Moments — Where Polish Earns The Game Its Wow
+
+Not all ~166 assets get the same attention. These are the five moments judges, streamers, and first-time players will screenshot. Spend disproportionate time on them.
+
+1. **Title screen / logo reveal.** First frame anyone sees. The logo must look forged, not typed.
+2. **Bracket view.** 8 portraits, some in `_dim` variant. The "who are the Dark Council" reveal.
+3. **Perk draft.** 3 cards side-by-side with 32 × 32 icons. The roguelite identity beat.
+4. **The Kneel / Coward's Brand.** The `kneel` animation's final held frame + `portrait_{champ}_cracked.png` overlay. The game's most emotionally loaded frame.
+5. **Match-end victory pose.** Winning champion's idle over the losing champion's held death frame on a desaturated grid.
+
+If something has to be "pretty good" instead of great, let it be a mid-match idle frame, not one of these five. Secondary hero moments (less screenshot-able): arena pillars silhouetted against sky, the Heretic's Desecrate sweep across tiles, the Mage's Blink implosion/explosion timing, the Knight's Vanguard Charge dust trail. Don't phone those in either.
+
+### 18.6 Forbidden Tools
+
+- **No 3D generators** (Meshy, Kaedim, etc.). DCT is 2D pixel art.
+- **No bulk-generate-many-variants workflows.** One asset at a time, reviewed, iterated. AI pixel-art speculation produces 200 colors across 20 sprites.
+- **No partial-alpha "pixel art"** — AI tools that output soft-edged high-res "pixel art" fail ART_SPEC QA at 4× zoom. Every pixel must be a single solid color.
 
 ---
 
-## 26. Trap List
+---
 
-- Do not commit `vite.config.ts.timestamp-*.mjs` or similar build-tool artifacts. Set `.gitignore` on day 1.
-- Do not create a second UI hierarchy parallel to `scenes/`. If you want a "screen," make a scene.
-- Do not create a second sprite folder. `public/sprites/` is the only one.
-- Do not inline helper functions across files. Used in more than one place → `src/shared/` on the first duplication, not the second.
-- Do not let visual features merge while core gameplay is broken.
-- Do not commit briefing or scratchpad markdowns to the repo root. PR descriptions or nothing. Only `README.md`, `SPEC.md`, and `ART_SPEC.md` live in root.
-- Do not skip the smoke gate "just this once."
-- Do not run two AI agents on overlapping files.
-- Do not put the project in a cloud-sync folder (OneDrive, Dropbox, iCloud).
-- Do not use `@ts-ignore`, `any`, or `as any` to silence type errors. Fix the types.
-- Do not refactor across milestone lines. A refactor PR is its own gated thing, not a side-quest in a feature branch.
-- Do not ship a class with a partial ability kit for "playtesting." All three abilities or none.
-- Do not hardcode grid dimensions, energy amounts, damage values, or any numbers outside `constants.ts`.
+# Part V — Reference
+
+Appendices. Glossary, decision log, the Definition of Done checklist, unresolved questions, post-jam ideas, and the handoff prompt for the next AI collaborator.
 
 ---
 
-## 27. Definition of Done (submission checklist)
+## 19. Glossary
+
+Alphabetical. One-line definitions. Useful when an AI collaborator drops into the doc mid-section.
+
+- **Ashen.** Adjective describing DCT's palette and mood. Cold gray, blood red, gold trim, near-black backgrounds. Never warm, never saturated, never cute.
+- **Ash Cloud.** Temporary 2×2 overlay placed by Pale Mage's Ash Cloud ability. Blocks LoS, deals 1 DoT per turn to units standing on it. Not a terrain type; tracked separately.
+- **Backstab (reserved).** A potential future mechanic enabled by `Unit.facing` being tracked server-side in v2. Not currently used, but facing is recorded for later addition without a contract migration.
+- **Batch.** A milestone-gated delivery of visual assets. See §18.2.
+- **Blink.** Pale Mage ability. 2 energy teleport within Manhattan distance 2, ignores LoS blockers and height.
+- **Blood Tithe.** Heretic ability: trade 4 HP for +2 energy this turn. The defining Heretic mechanic.
+- **BracketScene.** Client scene showing the 8-player tournament bracket standings. Displayed between matches.
+- **Camera rotation.** Client-only render state; 0°/90°/180°/270°. NOT game state (server doesn't know or care).
+- **Cinder Bolt.** Pale Mage basic ranged ability. 2 energy, 5 damage, range 3, LoS required.
+- **Coin flip.** Determines which player takes the first turn of a match. Seeded per match for determinism.
+- **Corrupted.** Temporary terrain state placed by Heretic's Desecrate. 3-turn duration. Deals 2 DoT/turn to non-Heretic; heals Heretic 1/turn.
+- **Coward's Brand.** The visual shame-badge applied to a surrenderer's portrait for the rest of the tournament. See §8.5.
+- **Desecrate.** Heretic ability. 3 energy, corrupts a 2×2 area for 3 turns.
+- **DoT.** Damage over Time. Applied at turn start for standing on hazard tiles, Ash Cloud, or Corrupted tiles. Bypasses the 1-damage floor (unlike direct attacks).
+- **eventId.** Server-generated correlation ID for an action. Paired `actionResult.eventId` + `stateUpdate` so clients know when to animate.
+- **Facing.** Direction a unit is looking in world space: `"N" | "E" | "S" | "W"`. Server-authoritative. Added in v2.
+- **FFT.** Final Fantasy Tactics (PS1, 1997). The North Star reference game.
+- **Fog of war.** Server-authoritative visibility filter. Clients only receive state they should know.
+- **Forfeit.** Loss by timeout (reconnect grace expired) or spam (>50 rejected actions in 10s). Distinct from Kneel surrender.
+- **Ghost marker.** Faded ColorMatrixFilter render of the last known position of an enemy you saw and then lost vision of. No separate sprite asset; runtime filter on the existing sprite.
+- **Hazard.** Terrain type family (Fire / Acid / Void) that does 1 DoT/turn to any unit standing on it.
+- **Hero Moments.** The five frames that define the game's visual identity: title reveal, bracket view, perk draft, Kneel, match-end. See §2.2.
+- **Hex Trap.** Heretic ability. Invisible trap on a tile; 4 damage + `revealed` status to a stepping enemy. Max 2 per Heretic.
+- **High Ground.** Terrain type. Costs 2 energy to climb onto; grants +25 % damage when attacking downward.
+- **Iron Stance.** Knight toggle ability. Negates knockback; +1 energy per tile of own movement while active.
+- **Iso / isometric.** The projection. 64 × 32 diamond tiles, units anchored center-bottom, depth-sorted by grid coordinates.
+- **Jump.** Per-class stat governing max `|Δh|` a unit can traverse in one movement step. Knight 2, Mage 3, Heretic 3. Added in v2.
+- **Kneel.** The surrender action. 3-second dramatic pause, bell toll, match ends, Coward's Brand applied.
+- **LoS.** Line of sight. Bresenham line from attacker center to target center, 3D-aware in v2.
+- **Masterpiece Benchmark.** The quality bar the game is graded against. Not "does it function" but "does it feel like FFT." See §2.
+- **MatchScene.** The client scene where 1v1 combat happens.
+- **MatchState.** The authoritative server-side representation of a live match. Fog-filtered per player before broadcast.
+- **Perk.** One of 16 between-round buffs. Draft 3, pick 1. Lasts the next round only.
+- **PerkDraftScene.** Client scene for the between-match perk pick.
+- **Pillar / Wall.** Impassable terrain types. Block LoS for ranged attacks AND Scout. Contribute infinite blocking height to 3D LoS regardless of stack.
+- **ResultsScene.** Post-match win/loss card scene. Routes winners to perk draft, losers to spectator mode.
+- **Rubble.** Difficult-terrain type. 2 energy to enter, 15 % damage reduction.
+- **SceneManager.** Client module that owns scene lifecycle and transitions.
+- **Scout.** Action. 1 energy. Reveals a 3×3 area anywhere on the map for one turn. Ignores LoS (magical insight).
+- **Server-authoritative.** The server computes game state; the client renders. Client cannot self-advance game state.
+- **Shadow Tile.** Terrain type. A unit on it is untargetable by direct single-target attacks until they take a non-trivial action.
+- **Shield Wall.** Knight ability. 50 % damage reduction + knockback negation for one turn.
+- **SoundManager.** The ONLY module in the client that plays audio.
+- **SpectatorScene.** Client scene for eliminated players watching live matches read-only.
+- **Stone.** Default terrain type. No modifiers.
+- **TournamentManager.** Server module that owns bracket state, bot fill, and perk draft orchestration.
+- **Turn timer.** 30-second countdown. Expiry forfeits remaining energy and auto-ends the turn.
+- **Vanguard Charge.** Knight ability. 3 energy. Straight-line orthogonal dash up to 3 tiles with damage + push on hit.
+
+---
+
+## 20. Decision Log
+
+Why we chose the paths we chose. Dated. Append-only. When future-us is tempted to redo something, read this first. Reversibility tags: **cheap** (a few hours), **moderate** (a PR or two), **hard** (would touch half the codebase).
+
+### 2026-04-14 — PixiJS 2D, not Three.js
+
+**Context:** M0 architecture decision. DCT needs isometric rendering; Three.js is the obvious "give me 3D" answer.
+
+**Chose:** PixiJS 8.x, pure 2D. Iso is faked with flat diamond PNGs and a rotated scene-graph transform.
+
+**Why:** Browser reach is better (PixiJS hits everywhere), the iso look is achievable without 3D, AI agents can iterate on 2D pixel sprites faster than on 3D models, and jam scope can't afford a 3D asset pipeline. Three.js would also have bought us nothing for the turn-based tactical format.
+
+**Reversibility:** hard. A lot of the renderer and input assume 2D. Don't reverse.
+
+### 2026-04-20 — ART_SPEC as a separate document
+
+**Context:** SPEC was getting long and the pixel-level detail was drowning the engineering detail. Also a dedicated sprite-artist agent needed a brief that wasn't padded with server protocol details.
+
+**Chose:** `ART_SPEC.md` at the repo root alongside SPEC. SPEC §14–§16 enumerate and refer out; ART_SPEC specifies pixels, palettes, QA checklists.
+
+**Why:** Two audiences with different needs. Engineering reads SPEC; sprite artist reads ART_SPEC; both stay synced because SPEC §14–§16 lock the canonical asset catalog and ART_SPEC is engineering-subordinate (SPEC wins on conflicts).
+
+**Reversibility:** moderate. Could re-merge but would bloat SPEC unreadably. Don't.
+
+### 2026-04-21 — Full 4-facing sprites, not mirrored pairs
+
+**Context:** With camera rotation landing in v2, the renderer needs to know how to present a unit's sprite at 4 different viewing angles. Two options: paint 2 facings and mirror for the other two (half-FFT), or paint all 4 (full-FFT).
+
+**Chose:** Full 4-facing. `_se`, `_sw`, `_ne`, `_nw` variants per animation per champion. ~92 sheets instead of ~46.
+
+**Why:** The Knight's shield is on the left arm in world space. Mirroring an SE sprite puts it on the right arm. That breaks the silhouette identity AND the world-consistency of gear. FFT solves this by painting four — that's the authenticity the masterpiece bar demands.
+
+**Reversibility:** moderate. If art budget blows, we can fall back to 2-facing + mirroring by shipping only SE/NE and flipping at runtime. Would need shield/weapon asymmetry to be de-emphasized, which hurts the silhouette test.
+
+### 2026-04-21 — Camera rotation is client-only
+
+**Context:** FFT has rotatable camera. Adding it raised the question: does the server know which rotation each client is viewing?
+
+**Chose:** No. Camera is client-only render state. Server is rotation-agnostic; all coordinates, ranges, fog, LoS are world-frame.
+
+**Why:** Rotation is a viewing preference. If it were server state, we'd have to sync it (creating input lag, reconnect questions, spectator questions) and open a new class of bugs where the "same" game looks different on each side. Making it client-only means we can't break game-state correctness by rotating, only visual presentation. Two clients at different angles is fine.
+
+**Reversibility:** hard. Making it server state later means migrating the contract and rewriting the input layer. Don't.
+
+### 2026-04-21 — Terrain has height, encoded on the tile
+
+**Context:** FFT's signature is multi-level terrain. We had to decide: add height, or keep flat and fake "tall stuff" with pillars.
+
+**Chose:** Added `Tile.height: number` to `TerrainTile`. Default 1. Arenas can override per tile.
+
+**Why:** The tactical texture of FFT depends on height gating attacks and movement (jump stat). Without it we'd have a tactical game that looks like FFT but doesn't play like one. Bolting height onto the contract at this point is cheap; doing it after M9 art ships would be expensive.
+
+**Reversibility:** moderate. Removing height means reverting the type, the validators, the LoS helper, and the renderer's stack logic. Don't plan to reverse.
+
+### 2026-04-22 — SPEC v2.0 rewrite instead of incremental patches
+
+**Context:** After committing to the FFT pivot (camera + height + 4-facing + masterpiece bar), we had the choice: patch v1.4 with M7.5-shaped inserts, or re-foundation the whole doc.
+
+**Chose:** Re-foundation. SPEC v2.0 restructures into five Parts with a narrative through-line, adds the Masterpiece Benchmark framing, and treats rotation/height/facing as first-class concepts instead of bolt-ons.
+
+**Why:** Every milestone after v1.4 would inherit the "bolted on" framing. With ~6 milestones still ahead, the compounding cost of reading a Frankenstein doc would exceed the one-time cost of a disciplined reorganization. Scope discipline: reorganize + extend, don't redesign; every closed v1.4 decision survives.
+
+**Reversibility:** cheap. v1.4 survives in git history and can be restored if v2.0 proves worse, which it won't.
+
+### 2026-04-22 — ART_SPEC v2 deferred until designer pilot returns
+
+**Context:** Should we rewrite ART_SPEC v2 now (in parallel with SPEC v2), or wait for the Knight-idle-SE pilot to return?
+
+**Chose:** Defer. Part IV of SPEC v2 writes the catalog and rules at the "what and how it's used" level; ART_SPEC v2 will extend with per-facing anatomy once the pilot proves the aesthetic is achievable.
+
+**Why:** Committing ART_SPEC v2 before the pilot locks in a target that might be unreachable. If the pilot returns and FFT-quality at 4-facing scale proves too ambitious, we adjust ART_SPEC v2 accordingly. Cheaper to write once knowing what's achievable than to write, rewrite, and rewrite again.
+
+**Reversibility:** cheap. Revisit when pilot returns.
+
+### 2026-04-22 — SPEC_V2.md as a staging file, not in-place SPEC.md edits
+
+**Context:** Landing v2 incrementally (Parts I–III, then IV, then V) across three PRs without a long-lived branch. Two options: patch SPEC.md in place section-by-section, or stage v2 in a separate file and swap at the end.
+
+**Chose:** Stage in `SPEC_V2.md`. During transition (3 PRs), SPEC.md v1.4 stays authoritative. Final swap PR archives v1.4 as `SPEC.v1.md` and promotes `SPEC_V2.md` → `SPEC.md`.
+
+**Why:** In-place edits would produce a mid-transition Frankenstein SPEC.md that's neither fully v1 nor fully v2 — exactly the state we're trying to avoid. Staged file means each intermediate commit is coherent. Three-day branch rule is respected because each PR lands in a day or less.
+
+**Reversibility:** cheap.
+
+---
+
+## 21. Definition of Done (submission checklist)
 
 **MVP (required for Vibe Jam 2026 submission):**
+
 - M0 through M13 on `main`, all green in CI.
 - A non-developer can open the game URL, click through title → lobby → class select → tournament, play a round against a bot, advance or lose, see results.
-- All three classes are playable and balanced within the ±5% matchup target.
+- All three classes playable and balanced within the ±5 % matchup target.
 - Fog of war meaningfully changes engagements (confirmed via playtest observations).
-- All 16 perks are in the pool and functional.
+- All 16 perks in the pool and functional.
 - All 5 arenas rotate and play distinctly.
 - Surrender mechanic fires with the dramatic sequence.
+- **Rotatable camera works smoothly across all scenes (v2).**
+- **Multi-height terrain with jump-stat gating (v2).**
+- **4-facing champion sprites across all animations (v2).**
 - No placeholder text in user-facing UI.
-- No `any`, `@ts-ignore`, or TODO blockers in shipped code.
+- No `any`, no `@ts-ignore`, no TODO blockers in shipped code.
 
 **Stretch (nice-to-have):**
+
 - Tournament stats screen at end (damage dealt, tiles moved, abilities used).
 - Spectator emotes.
 - Variable bot difficulty.
-- Replay system.
+- Replay system (match-log is already there for debugging; persistence is the stretch).
 
-If MVP slips, cut stretch first, then cut arenas (ship 3 instead of 5), then cut perks (ship 10 instead of 16). Never cut class kits, fog of war, or server authority — those *are* the game.
+**If MVP slips** (prioritized cut order):
 
----
+1. Cut stretch first.
+2. Cut arenas (ship 3 instead of 5).
+3. Cut perks (ship 10 instead of 16).
 
-## 28. Open Questions
-
-Resolve before hitting the milestone that needs them. Don't resolve them on day 1; they'll change as the game is built.
-
-- Before M5: any asymmetric unit counts (2v1, 3v3) or is it strictly 1v1?
-- Before M7: exact pickup spawn seeding per arena — fixed slots with random contents, or fully random positions?
-- Before M10: can losers draft a perk for the final? (Current design: no, only advancing players.)
-- Before M11: how do we handle a bot losing to itself if both bots end up in a match? (Current: deterministic seed from match ID for tiebreak.)
-- Before M12: do spectators see full fog-lifted state or the perspective of one player? (Lean: full state.)
-- Before submission: cosmetic unlocks / meta-progression? (Lean: no. Jam scope.)
+**Never cut:** class kits, fog of war, server authority, camera rotation, terrain height, 4-facing sprites. Those *are* the game.
 
 ---
 
-## 29. Post-Jam Ideas (explicitly out of scope)
+## 22. Open Questions
 
-These exist so you don't accidentally build them before the jam ships.
+Resolve before hitting the milestone that needs them. Don't resolve on day 1; they'll change as the game is built.
+
+### 22.1 Resolved during v1.x
+
+| Question | Resolution | Resolved at |
+|----------|------------|-------------|
+| Asymmetric unit counts (2v1, 3v3) or strictly 1v1? | Strictly 1v1. | Pre-M5 |
+| Pickup spawn seeding — fixed slots with random contents, or fully random positions? | Fixed slots per arena, which *chest* appears where is rolled at match start. | Pre-M7 |
+| Can losers draft a perk for the final? | No, only advancing players. | Pre-M10 |
+| Bot-vs-bot tiebreak mechanism? | Deterministic seed from match ID. | Pre-M11 |
+| Spectators see full fog-lifted state or one player's perspective? | Full state. | Pre-M12 |
+| Cosmetic unlocks / meta-progression? | No. Jam scope. | Pre-submission |
+
+### 22.2 Open during v2.x
+
+- **Before M7.5:** When camera rotates mid-animation, should in-flight tweens (attack animation frames, unit walk) snap to final or continue through rotation? **Lean:** continue playing; rotation only changes sprite selection, not frame index.
+- **Before M7.5:** Does Blink's height-ignoring behavior also ignore pillars along the destination path? **Lean:** yes — Blink doesn't traverse, it resolves. Pillars only matter for the *destination* tile being valid (not a pillar itself), not for intermediate tiles.
+- **Before M8:** Can an arena place a spawn point on a height > 1 tile? **Lean:** yes, arena author's call, but the spawn tile plus two adjacent tiles must be reachable (`|Δh| ≤ spawner.jump`) so the unit isn't stuck.
+- **Before M8:** Does High Ground's +25 % damage bonus apply from a stacked Stone tile (height > source + 1), or only when standing on the `high_ground` terrain type? **Lean:** applies based on actual height delta regardless of terrain type. High Ground terrain exists mainly for the +2-energy climb cost.
+- **Before M9:** Does a unit's facing snap instantly when it turns to attack, or tween? **Lean:** snap on the frame immediately before the attack animation; any tween is a post-M9 polish concern.
+- **Before M10:** Do perks that apply at "round start" (Second Wind, First Strike) trigger before or after the coin flip? **Lean:** before the first turn begins, regardless of who acts first.
+- **Before M11:** If a pickup spawns on a height > 0 tile that the spawning player can't reach (jump too low), does the match auto-skip that pickup? **Lean:** no; arena authoring should prevent it.
+
+---
+
+## 23. Post-Jam Ideas (explicitly out of scope)
+
+These exist so we don't accidentally build them before the jam ships.
 
 - Tekken-style "Tavern" pixel-art lobby with a walkable champion avatar.
-- Eliminated-as-ghost spectator balcony with emotes.
+- Eliminated-as-ghost spectator balcony with emotes and reactions.
 - Cosmetic unlocks (champion recolors, arena effects, banners, Coward's Crown).
 - Leaderboards, ranked matchmaking, seasons.
-- Friend lists, parties, custom lobbies, replays.
-- Additional classes (Ranger, Cleric, whatever comes next).
-- Rule modifiers (3-energy mode, no-perks mode).
+- Friend lists, parties, custom lobbies, chat.
+- Persistent replays (match-log already exists in memory; disk persistence is the stretch).
+- Additional classes (Ranger, Cleric, Warlock, whatever comes next).
+- Rule modifiers (3-energy mode, no-perks mode, draft-your-own-arena).
+- Asynchronous play (turn-by-email tactical).
+- Touch/mobile client.
+- Actual backstab mechanic using the already-tracked `Unit.facing`.
+- 2v2 mode.
+- Custom arena editor.
+- Rotatable-camera smoothness at arbitrary angles (currently locked to 90° increments).
 
 Everything above is a Vibe Jam 2027 or later problem. Do not touch during jam development.
 
 ---
 
-## 30. Handoff Prompt — For the Incoming AI ("New Kai")
+## 24. Handoff Prompt — for the incoming AI ("New Kai")
 
-Paste the following into your first message in the new chat, after you've told the model its name is Kai and given it repo access. This briefs it without drowning it in back-story.
+Paste the following into the first message of a fresh chat, after naming the model Kai and giving it repo access.
 
 ```
-You're Kai, senior game-dev collaborator on Dark Council Tactic, a 1v1
-energy-based tactical combat game for Vibe Jam 2026. Tech: PixiJS v8,
-TypeScript strict, Node ws (port 8080), Vite (port 3000), server-authoritative.
+You're Kai, senior game-dev collaborator on Dark Council Tactic, a 1v1 FFT-style
+tactical combat game for Vibe Jam 2026. Tech: PixiJS v8, TypeScript strict,
+Node ws (port 8080), Vite (port 3000), server-authoritative. Pure 2D renderer
+faking iso with rotatable camera (90° steps) and multi-height terrain.
 
-SPEC.md in the repo root is the single source of truth for engineering. Read it
-end to end before touching code. When SPEC.md disagrees with your prior
-assumptions, SPEC.md wins; when you disagree with SPEC.md, open a PR against it,
-don't fork the design by coding a different mental model.
+SPEC.md in the repo root is the single source of truth for engineering.
+Current version: v2.0 (five Parts: The Game / How It Plays / How It's Built /
+How It Looks and Sounds / Reference). Read it end to end before touching code.
+When SPEC.md disagrees with your prior assumptions, SPEC.md wins; when you
+disagree with SPEC.md, open a PR against it — don't fork the design by coding
+a different mental model.
 
 ART_SPEC.md sits next to SPEC.md and is the designer-facing brief for the
-sprite artist. Engineering doesn't need to memorize it, but you should skim it
-once so you know what's coming in `public/sprites/` — canvas sizes, anchor
-points, frame counts, file names. If engineering needs to force a visual
-change, patch SPEC.md §21–§22 first, then update ART_SPEC.md to match.
+sprite artist. Engineering doesn't need to memorize it, but skim once so you
+know what's coming in public/sprites/. If engineering needs a visual change,
+patch SPEC.md §§14-16 first, then update ART_SPEC.md to match.
 
-The engineering principles in SPEC.md §3 and the trap list in §26 are the
-guardrails. Follow them even when they feel slow — they exist to keep the build
-playable and the process tight.
+Key v2 concepts to internalize before coding:
+- Camera rotation is CLIENT-ONLY state. Server never knows or cares.
+- Unit facing (N/E/S/W) is SERVER-AUTHORITATIVE state. Updated on move/attack/ability.
+- Tile.height is server state. Movement gated by class jump stat.
+- LoS is 3D-aware — heights block rays, not just pillars/walls.
+- Sprites are FULL 4-facing (SE/SW/NE/NW). NEVER mirror at runtime.
+- Part III §12 lists milestones. M7.5 is the v2 foundation (rotation + height + facing).
 
-Before your first code edit, do these three things:
-  1. Run `pwd`, `git status`, `git log --oneline -5` to confirm the sandbox
-     is mounted on the right repo and history looks sane. If git state is
-     broken, stop and tell Fernando.
-  2. Read SPEC.md end to end. Yes, all of it. It's long on purpose.
-  3. Ask Fernando which milestone you're starting on (expected: M0 — skeleton).
+Engineering principles (SPEC §9.1) and the trap list (§13.5) are the
+guardrails. Follow them even when they feel slow — they exist to keep the
+build playable and the process tight.
 
-Workflow: branch naming `kai/m<N>-<slug>`, PR to main, must pass typecheck +
-unit + smoke. No direct commits to main. No `@ts-ignore` or `any` shortcuts.
-One AI agent per file at a time — if another agent is open on a file, wait
-or coordinate first.
+Before your first code edit:
+  1. Run pwd, git status, git log --oneline -10 to confirm sandbox.
+  2. Read SPEC.md end to end. Yes, all of it.
+  3. Skim the decision log (Part V §20) — it explains why things are the
+     way they are.
+  4. Ask Fernando which milestone you're starting on.
 
-Tone: peer-to-peer with Fernando. Casual, direct, opinionated. Fernando calls
-you Kai and writes informally ("lmk", "u", "k") — match his energy without
-mirroring sycophantically. When you screw up, own it plainly. Humor is fine
-when it lands. No corporate hedging.
+Workflow: branch naming kai/m<N>-<slug>, PR to main, must pass typecheck +
+unit + smoke. No direct commits to main. No @ts-ignore or any shortcuts.
+One AI agent per file at a time.
 
-Your first response should confirm you've read SPEC.md, name the milestone
-you're starting on, and propose the branch name. Do not start coding until
-Fernando says go.
+Tone: peer-to-peer with Fernando. Casual, direct, opinionated. Match his
+energy without mirroring sycophantically. Own mistakes plainly. No
+corporate hedging.
+
+Confirm you've read SPEC.md and the decision log, name the milestone you're
+starting on, propose the branch name. Do not start coding until Fernando
+says go.
 ```
 
-### 30.1 First actions checklist (for Fernando)
-
-Before handing the spec to the new chat, do these in PowerShell:
+### 24.1 First actions checklist (for Fernando, if starting a fresh project)
 
 1. Create the project folder on a local (non-cloud-synced) drive.
-2. `git init` and create the GitHub repo (private).
+2. `git init` and create the GitHub repo (private during development).
 3. Drop `SPEC.md`, `ART_SPEC.md`, and a minimal `README.md` into the root.
-4. Commit: `initial: SPEC, ART_SPEC, README`.
+4. Commit: `initial: SPEC, ART_SPEC, README, gitignore`.
 5. Set up `main` branch protection in GitHub Settings → Branches: require PR, require CI checks, no force-push.
-6. Open the new chat. Paste the handoff prompt from §30. Attach SPEC.md and ART_SPEC.md. Say: "start at M0."
+6. Open the new chat. Paste the handoff prompt above. Attach SPEC.md and ART_SPEC.md. Say: "start at M0."
 
-From that point, the new Kai handles scaffolding M0 in a PR; you review and merge if CI is green.
+From that point, the new Kai handles scaffolding M0 in a PR; Fernando reviews and merges on green CI.
 
 ---
 
-*Spec v1.4 — 2026-04-20. Paired with ART_SPEC.md.*
+*SPEC v2.0 — 2026-04-22. Parts I–V complete. v1.4 archived as `SPEC.v1.md`. Paired with `ART_SPEC.md`.*
 — Kai
