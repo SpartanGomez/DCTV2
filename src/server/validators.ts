@@ -9,7 +9,16 @@ import {
   MOVE_COST_DEFAULT,
   MOVE_COST_DIFFICULT,
 } from '../shared/constants.js'
-import { isInBounds, manhattanDistance, positionKey, positionsEqual } from '../shared/grid.js'
+import {
+  canTraverseHeight,
+  isInBounds,
+  lineOfSight3D,
+  manhattanDistance,
+  positionKey,
+  positionsEqual,
+  tileHeight,
+  visionBlockerHeights,
+} from '../shared/grid.js'
 import type {
   GameAction,
   MatchState,
@@ -83,6 +92,8 @@ export function validateMove(
   const ironStanceTax = unit.statuses.some((s) => s.kind === 'iron_stance')
     ? IRON_STANCE_EXTRA_MOVE_COST
     : 0
+  // SPEC v2 §6.3 — height delta gated by class jump stat. |Δh| ≤ 1 is free.
+  const jump = CLASS_STATS[unit.classId].jump
   let totalCost = 0
   for (const step of action.path) {
     if (!isInBounds(step)) return { ok: false, code: 'invalid_path' }
@@ -93,6 +104,9 @@ export function validateMove(
       return { ok: false, code: 'tile_impassable' }
     }
     if (occupied.has(positionKey(step))) return { ok: false, code: 'tile_occupied' }
+    if (!canTraverseHeight(prevTile.height, tile.height, jump)) {
+      return { ok: false, code: 'height_exceeds_jump' }
+    }
     totalCost += moveCostInto(prevTile, tile) + ironStanceTax
     prev = step
     prevTile = tile
@@ -166,14 +180,30 @@ export function validateAttack(
   if (dist > range) return { ok: false, code: 'out_of_range' }
 
   // Shadow tile conceals the occupant from direct single-target attacks
-  // (SPEC §10). Area effects ignore this — we'll implement those at M5+.
+  // (SPEC §10). Area effects ignore this.
   const targetTile = state.grid.tiles[target.pos.y]?.[target.pos.x]
   if (targetTile?.type === 'shadow') return { ok: false, code: 'target_untargetable' }
 
-  // LoS check for ranged classes. Until M7 pillars/walls are placed on
-  // real arenas, the stone grid has no LoS blockers and this always
-  // passes. When arenas land, add the Bresenham check in grid.ts.
-  // (SPEC §8.5: LoS is required for ranged attacks; melee is unconditional.)
+  // SPEC v2 §5.5 + §6.3 — melee additionally requires |Δh| ≤ 1 (slash one
+  // tile down from a ledge, not three). Knight (range 1) is melee; Heretic
+  // at range 2 ignores LoS but still respects the height ceiling.
+  const attackerHeight = tileHeight(state, attacker.pos)
+  const targetHeight = tileHeight(state, target.pos)
+  if (CLASS_STATS[attacker.classId].attackRange === 1) {
+    if (Math.abs(attackerHeight - targetHeight) > 1) {
+      return { ok: false, code: 'out_of_range' }
+    }
+  }
+
+  // Ranged LoS check (SPEC §5.5). Mage (`requiresLoS: true`) needs an
+  // unobstructed 3D line. Knight (melee) and Heretic (point-blank class
+  // range that ignores pillars per §7.2.3) skip this.
+  if (CLASS_STATS[attacker.classId].requiresLoS) {
+    const heights = visionBlockerHeights(state)
+    if (!lineOfSight3D(attacker.pos, attackerHeight, target.pos, targetHeight, heights)) {
+      return { ok: false, code: 'no_line_of_sight' }
+    }
+  }
 
   return { ok: true, cost: ATTACK_COST }
 }

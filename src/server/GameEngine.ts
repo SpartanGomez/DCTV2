@@ -307,9 +307,15 @@ export function applyMove(
   const hasGhostStep = actingUnit.statuses.some((s) => s.kind === 'ghost_step_ready')
   const actualCost = hasGhostStep ? 0 : cost
 
+  // SPEC v2 §6.6 — facing follows the direction of the final step. The
+  // penultimate tile (or current pos for a single-step move) is the source
+  // of the facing vector.
+  const penultimate = action.path[action.path.length - 2] ?? actingUnit.pos
+  const facing = facingToward(penultimate, destination)
+
   const units = state.units.map((u) => {
     if (u.id !== action.unitId) return u
-    const updated = { ...u, pos: destination }
+    const updated = { ...u, pos: destination, facing }
     if (hasGhostStep) {
       return { ...updated, statuses: updated.statuses.filter((s) => s.kind !== 'ghost_step_ready') }
     }
@@ -391,11 +397,14 @@ export function applyAttack(
   // Perk: vampiric_touch (heal attacker 1 HP per successful hit).
   const vampHeal = attackerPerks.includes('vampiric_touch') ? 1 : 0
 
+  // SPEC v2 §6.6 — attacker pivots to face the target.
+  const newAttackerFacing = facingToward(attacker.pos, target.pos)
+
   const units = state.units
     .map((u) => {
       if (u.id === target.id) return { ...u, hp: nextHp }
       if (u.id === attacker.id) {
-        let updated = u
+        let updated = { ...u, facing: newAttackerFacing }
         // Consume first_strike_ready.
         if (hasFirstStrike) {
           updated = { ...updated, statuses: updated.statuses.filter((s) => s.kind !== 'first_strike_ready') }

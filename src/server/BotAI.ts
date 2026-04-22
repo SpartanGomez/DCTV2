@@ -4,7 +4,13 @@
 // Strategy: attack if possible, else move toward enemy, else end turn.
 
 import { CLASS_STATS } from '../shared/constants.js'
-import { isInBounds, manhattanDistance, orthogonalPath } from '../shared/grid.js'
+import {
+  canTraverseHeight,
+  isInBounds,
+  manhattanDistance,
+  orthogonalPath,
+  tileHeight,
+} from '../shared/grid.js'
 import {
   type GameAction,
   type MatchState,
@@ -115,19 +121,28 @@ function pathTowardTarget(
     }
   }
 
-  // Try a direct orthogonal path first.
+  // SPEC v2 §6.3 — bot must respect its class jump stat. Truncate the path
+  // at the first illegal step (impassable, occupied, or Δh too steep).
+  const jump = CLASS_STATS[unit.classId].jump
   const direct = orthogonalPath(unit.pos, target).slice(0, maxSteps)
+  let prevH = tileHeight(state, unit.pos)
   const firstBlocked = direct.findIndex((p) => {
     const key = `${String(p.x)},${String(p.y)}`
     if (occupied.has(key)) return true
     const tile = state.grid.tiles[p.y]?.[p.x]
-    return tile?.type === 'pillar' || tile?.type === 'wall'
+    if (!tile) return true
+    if (tile.type === 'pillar' || tile.type === 'wall') return true
+    if (!canTraverseHeight(prevH, tile.height, jump)) return true
+    prevH = tile.height
+    return false
   })
 
   const usable = firstBlocked === -1 ? direct : direct.slice(0, firstBlocked)
   if (usable.length > 0) return usable
 
-  // If direct path is immediately blocked, try adjacent detour tiles.
+  // If the direct path is immediately blocked, try one-step adjacent detours
+  // toward the target. Detour must be passable AND within jump.
+  const fromH = tileHeight(state, unit.pos)
   const detours: Position[] = [
     { x: unit.pos.x + 1, y: unit.pos.y },
     { x: unit.pos.x - 1, y: unit.pos.y },
@@ -139,7 +154,9 @@ function pathTowardTarget(
     const key = `${String(d.x)},${String(d.y)}`
     if (occupied.has(key)) continue
     const tile = state.grid.tiles[d.y]?.[d.x]
-    if (tile?.type === 'pillar' || tile?.type === 'wall') continue
+    if (!tile) continue
+    if (tile.type === 'pillar' || tile.type === 'wall') continue
+    if (!canTraverseHeight(fromH, tile.height, jump)) continue
     // Only take the detour if it's closer or equal distance to target.
     if (manhattanDistance(d, target) < manhattanDistance(unit.pos, target)) {
       return [d]
