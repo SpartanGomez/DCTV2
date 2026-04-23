@@ -152,7 +152,10 @@ export class MatchScene implements Scene {
   private state: MatchState
   private readonly youAre: PlayerId
   private readonly handlers: MatchSceneHandlers
-  private hudText: Text | null = null
+  private turnBanner: Text | null = null
+  private turnSub: Text | null = null
+  private turnTimerText: Text | null = null
+  private energyPipsGfx: Graphics | null = null
   private tickFn: (() => void) | null = null
   private boundRenderer: Renderer | null = null
   /** Last-known enemy positions for ghost marker rendering (SPEC §11). */
@@ -591,18 +594,70 @@ export class MatchScene implements Scene {
   }
 
   private drawHud(renderer: Renderer): void {
-    const text = new Text({
-      text: this.hudString(),
+    // The hudLayer sits on the same container as the grid, so we offset by
+    // the root stage translation to land at viewport coordinates.
+    const originX = -this.root.x
+    const originY = -this.root.y
+
+    // Turn banner — top-center, large. YOUR TURN in gold, OPPONENT TURN dim.
+    const banner = new Text({
+      text: '',
       style: {
         fontFamily: 'monospace',
-        fontSize: 14,
-        fill: LABEL_FILL,
+        fontSize: 22,
+        fontWeight: 'bold',
+        fill: 0xbba040,
+        letterSpacing: 6,
       },
     })
-    text.x = -this.root.x + 16
-    text.y = -this.root.y + 16
-    this.hudLayer.addChild(text)
-    this.hudText = text
+    banner.anchor.set(0.5, 0)
+    banner.x = originX + renderer.width / 2
+    banner.y = originY + 12
+    this.hudLayer.addChild(banner)
+    this.turnBanner = banner
+
+    // Sub-line under the banner — "turn 5 · pit".
+    const sub = new Text({
+      text: '',
+      style: { fontFamily: 'monospace', fontSize: 11, fill: 0x8888aa, letterSpacing: 3 },
+    })
+    sub.anchor.set(0.5, 0)
+    sub.x = originX + renderer.width / 2
+    sub.y = originY + 40
+    this.hudLayer.addChild(sub)
+    this.turnSub = sub
+
+    // Turn timer — top-left, large.
+    const timer = new Text({
+      text: '',
+      style: {
+        fontFamily: 'monospace',
+        fontSize: 28,
+        fontWeight: 'bold',
+        fill: 0x66cc66,
+      },
+    })
+    timer.x = originX + 20
+    timer.y = originY + 16
+    this.hudLayer.addChild(timer)
+    this.turnTimerText = timer
+
+    // Energy pips — top-right. One filled/empty circle per energy slot.
+    const pips = new Graphics()
+    pips.x = originX + renderer.width - 20
+    pips.y = originY + 28
+    this.hudLayer.addChild(pips)
+    this.energyPipsGfx = pips
+
+    // Key hints — bottom-center. Static; no need to track for updates.
+    const hints = new Text({
+      text: '[Q]/[E] rotate · [Space] end · [D] defend · [S] scout · [U] use · [Shift+K] kneel · [F3] debug',
+      style: { fontFamily: 'monospace', fontSize: 11, fill: 0x6a6a80, letterSpacing: 2 },
+    })
+    hints.anchor.set(0.5, 1)
+    hints.x = originX + renderer.width / 2
+    hints.y = originY + renderer.height - 10
+    this.hudLayer.addChild(hints)
 
     // F3 debug overlay (SPEC v2 §6.5, M7.5 DoD) — hidden until toggled.
     const debug = new Text({
@@ -613,17 +668,60 @@ export class MatchScene implements Scene {
         fill: 0xffcc66,
       },
     })
-    debug.x = -this.root.x + 16
-    debug.y = -this.root.y + 40
+    debug.x = originX + 20
+    debug.y = originY + 54
     debug.visible = false
     this.hudLayer.addChild(debug)
     this.debugText = debug
-    // Suppress unused param lint; renderer not needed past mount.
-    void renderer
   }
 
   private refreshHud(): void {
-    if (this.hudText) this.hudText.text = this.hudString()
+    const your = this.state.currentTurn === this.youAre
+    const energy = this.state.energy[this.state.currentTurn] ?? 0
+    const max = this.state.maxEnergy[this.state.currentTurn] ?? 0
+    const remainingMs = Math.max(0, this.state.turnEndsAt - Date.now())
+    const seconds = Math.ceil(remainingMs / 1000)
+
+    if (this.turnBanner) {
+      this.turnBanner.text = your ? 'YOUR TURN' : 'OPPONENT TURN'
+      this.turnBanner.style.fill = your ? 0xbba040 : 0x6a6a80
+    }
+    if (this.turnSub) {
+      const rotDeg = this.cameraRotation * 90
+      this.turnSub.text = `turn ${String(this.state.turnNumber)} · cam ${String(rotDeg)}°`
+    }
+    if (this.turnTimerText) {
+      this.turnTimerText.text = `${String(seconds)}s`
+      // Green > 10s, yellow > 5s, red otherwise.
+      this.turnTimerText.style.fill =
+        seconds > 10 ? 0x66cc66 : seconds > 5 ? 0xddaa33 : 0xcc4444
+    }
+    if (this.energyPipsGfx) this.drawEnergyPips(this.energyPipsGfx, energy, max)
+  }
+
+  /**
+   * Render the energy gauge as a row of circles. Filled = available,
+   * hollow outline = spent. Anchored to `g.position` (top-right of the HUD).
+   */
+  private drawEnergyPips(g: Graphics, current: number, max: number): void {
+    g.clear()
+    const pipRadius = 7
+    const gap = 6
+    const total = Math.max(max, 1)
+    const rowWidth = total * (pipRadius * 2) + (total - 1) * gap
+    // Lay out right-to-left so the anchor stays on the right edge.
+    for (let i = 0; i < total; i++) {
+      const cx = -rowWidth + pipRadius + i * (pipRadius * 2 + gap)
+      const filled = i < current
+      g.circle(cx, 0, pipRadius)
+      if (filled) {
+        g.fill({ color: 0xbba040 })
+        g.stroke({ color: 0x8a7a30, width: 1 })
+      } else {
+        g.fill({ color: 0x1a1a28 })
+        g.stroke({ color: 0x4a4a5a, width: 1 })
+      }
+    }
   }
 
   private refreshDebugOverlay(): void {
@@ -637,14 +735,4 @@ export class MatchScene implements Scene {
     this.debugText.text = `[F3] rot: ${String(rotDeg)}°${tweenStr} · hover: ${hoverStr}`
   }
 
-  private hudString(): string {
-    const your = this.state.currentTurn === this.youAre
-    const energy = this.state.energy[this.state.currentTurn] ?? 0
-    const max = this.state.maxEnergy[this.state.currentTurn] ?? 0
-    const turn = your ? 'YOUR TURN' : 'OPPONENT TURN'
-    const remainingMs = Math.max(0, this.state.turnEndsAt - Date.now())
-    const seconds = Math.ceil(remainingMs / 1000)
-    const rotDeg = this.cameraRotation * 90
-    return `${turn} — turn ${String(this.state.turnNumber)} — ${String(seconds)}s — energy ${String(energy)}/${String(max)} — cam ${String(rotDeg)}°   [Q]/[E] rotate · [Space] end · [D] defend · [S] scout · [U] use`
-  }
 }
