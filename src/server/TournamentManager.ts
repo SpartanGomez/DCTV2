@@ -298,7 +298,9 @@ export class TournamentManager {
         const winners = this.winnersOfCurrentRound()
         if (winners.length === 1) {
           this.phase = 'complete'
-          console.log(`[tournament] ${this.id} complete — champion: ${winners[0]}`)
+          const champion = winners[0]
+          console.log(`[tournament] ${this.id} complete — champion: ${champion}`)
+          if (champion) this.broadcastTournamentComplete(champion)
         } else {
           this.startPerkDraft(winners)
         }
@@ -315,6 +317,17 @@ export class TournamentManager {
     for (const slot of this.slots) {
       if (!slot.socket || slot.isBot) continue
       this.send(slot.socket, { type: 'tournamentUpdate', bracket: state })
+    }
+  }
+
+  private broadcastTournamentComplete(champion: PlayerId): void {
+    const bracket: BracketState = { rounds: this.rounds, currentRound: this.currentRound }
+    for (const slot of this.slots) {
+      if (!slot.socket || slot.isBot) continue
+      this.send(slot.socket, { type: 'tournamentComplete', champion, bracket })
+    }
+    for (const [, spec] of this.spectators) {
+      this.send(spec.socket, { type: 'tournamentComplete', champion, bracket })
     }
   }
 
