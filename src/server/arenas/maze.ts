@@ -1,4 +1,7 @@
 // The Maze — winding paths with shadow tiles. Information warfare. Heretic's home.
+// SPEC v2 §6.3 — intentionally flat (all height 1). The maze's identity is
+// LoS-driven (shadow + pillars); height would muddy that. Other arenas supply
+// the vertical play, so M11 "each plays distinctly" is preserved.
 import type { ArenaDef } from '../../shared/types.js'
 
 export const maze: ArenaDef = {
