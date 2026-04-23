@@ -38,6 +38,9 @@ declare global {
       getTileHeight: (x: number, y: number) => number
       getOwnPos: () => { x: number; y: number } | null
       getOwnFacing: () => 'N' | 'E' | 'S' | 'W' | null
+      isRotating: () => boolean
+      toggleDebugOverlay: () => void
+      isDebugOverlayVisible: () => boolean
     }
   }
 }
@@ -228,6 +231,11 @@ async function main(): Promise<void> {
       net.send({ type: 'action', action: { kind: 'kneel' } })
     }
     if (ev.key === 'Escape') scoutArmed = false
+    // F3 toggles the SPEC v2 §6.5 debug overlay (rotation + hovered tile height).
+    if (ev.key === 'F3') {
+      ev.preventDefault()
+      activeScene?.toggleDebugOverlay()
+    }
   })
   const wrappedSendMove = sendMove
   const scoutingAwareTileClick = (pos: Position): void => {
@@ -300,6 +308,9 @@ async function main(): Promise<void> {
         return u ? { x: u.pos.x, y: u.pos.y } : null
       },
       getOwnFacing: () => activeScene?.getOwnUnit()?.facing ?? null,
+      isRotating: () => activeScene?.isRotating ?? false,
+      toggleDebugOverlay: () => activeScene?.toggleDebugOverlay(),
+      isDebugOverlayVisible: () => activeScene?.isDebugOverlayVisible ?? false,
     }
   }
 

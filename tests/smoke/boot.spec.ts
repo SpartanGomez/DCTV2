@@ -410,11 +410,54 @@ test('M7.5 — camera rotation is client-only; pageA rotates, pageB stays put', 
     })
     await pageA.evaluate(() => { window.__dct?.rotateCamera('cw') })
     await rotated
+    // Tween is in-flight (150 ms) — a second Q/E must be rejected by the input
+    // gate; the visible rotation does not advance to 180°.
+    expect(await pageA.evaluate(() => window.__dct?.isRotating())).toBe(true)
+    await pageA.evaluate(() => { window.__dct?.rotateCamera('cw') })
+    // Wait for the tween to settle, then confirm the final index is 1, not 2.
+    await pageA.waitForFunction(() => window.__dct?.isRotating() === false, undefined, { timeout: 2_000 })
 
     const rotA1 = await pageA.evaluate(() => window.__dct?.getCameraRotation())
     const rotB1 = await pageB.evaluate(() => window.__dct?.getCameraRotation())
     expect(rotA1).toBe(1)
     expect(rotB1).toBe(0) // client-only — peer unaffected
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — F3 toggles the debug overlay (rotation + hovered tile height)', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    await Promise.all([msA, msB])
+
+    expect(await pageA.evaluate(() => window.__dct?.isDebugOverlayVisible())).toBe(false)
+
+    const toggledOn = pageA.waitForEvent('console', {
+      predicate: (m) => m.text().includes('debug overlay on'),
+      timeout: 5_000,
+    })
+    await pageA.evaluate(() => { window.__dct?.toggleDebugOverlay() })
+    await toggledOn
+    expect(await pageA.evaluate(() => window.__dct?.isDebugOverlayVisible())).toBe(true)
+
+    const toggledOff = pageA.waitForEvent('console', {
+      predicate: (m) => m.text().includes('debug overlay off'),
+      timeout: 5_000,
+    })
+    await pageA.evaluate(() => { window.__dct?.toggleDebugOverlay() })
+    await toggledOff
+    expect(await pageA.evaluate(() => window.__dct?.isDebugOverlayVisible())).toBe(false)
   } finally {
     await ctxA.close()
     await ctxB.close()
