@@ -6,6 +6,7 @@
 // state — server has no idea.
 
 import { Container, Graphics, Text } from 'pixi.js'
+import { playSfx } from '../audio.js'
 import {
   DEFAULT_TILE_HEIGHT,
   GRID_HEIGHT,
@@ -257,6 +258,7 @@ export class MatchScene implements Scene {
   private beginRotationTween(next: CameraRotation): void {
     if (next === this.cameraRotation) return
     console.log(`[client] camera rotation -> ${String(next * 90)}°`)
+    playSfx('camera_rotate')
     this.rotationTween = {
       startMs: performance.now(),
       from: this.cameraRotation,
@@ -389,6 +391,7 @@ export class MatchScene implements Scene {
     // World coords baked in — listener fires the same payload regardless of
     // current camera rotation, so the server never sees rotation state.
     g.on('pointertap', () => {
+      playSfx('ui_click')
       this.handlers.onTileClick({ x: gx, y: gy })
     })
     g.on('pointerover', () => {
