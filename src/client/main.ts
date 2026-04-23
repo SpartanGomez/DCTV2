@@ -32,6 +32,12 @@ declare global {
       kneel: () => void
       attackNearest: () => void
       ability: (index: 0 | 1 | 2, target?: { x: number; y: number }) => void
+      // M7.5 smoke hooks (SPEC v2 §6.3 / §6.5 / §6.6).
+      rotateCamera: (dir: 'ccw' | 'cw') => void
+      getCameraRotation: () => 0 | 1 | 2 | 3
+      getTileHeight: (x: number, y: number) => number
+      getOwnPos: () => { x: number; y: number } | null
+      getOwnFacing: () => 'N' | 'E' | 'S' | 'W' | null
     }
   }
 }
@@ -279,6 +285,21 @@ async function main(): Promise<void> {
       ability: (index, target) => {
         sendAbility(index, target)
       },
+      rotateCamera: (dir) => {
+        if (!activeScene) return
+        if (dir === 'ccw') activeScene.rotateCameraCcw()
+        else activeScene.rotateCameraCw()
+      },
+      getCameraRotation: () => activeScene?.rotation ?? 0,
+      getTileHeight: (x, y) => {
+        const state = activeScene?.currentState
+        return state?.grid.tiles[y]?.[x]?.height ?? 1
+      },
+      getOwnPos: () => {
+        const u = activeScene?.getOwnUnit()
+        return u ? { x: u.pos.x, y: u.pos.y } : null
+      },
+      getOwnFacing: () => activeScene?.getOwnUnit()?.facing ?? null,
     }
   }
 
