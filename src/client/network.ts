@@ -5,7 +5,20 @@
 
 import type { ClientMessage, ServerMessage } from '../shared/types.js'
 
-const DEFAULT_WS_URL = 'ws://localhost:8080'
+/**
+ * Pick a WS URL that works in both dev and prod without config:
+ *   - Vite dev (host is localhost:3000) → ws://localhost:8080 (the dev server).
+ *   - Anywhere else (static bundle served by the Node process itself) →
+ *     same origin, upgraded to wss:// if the page is https://.
+ */
+function defaultWsUrl(): string {
+  if (typeof window === 'undefined') return 'ws://localhost:8080'
+  const { hostname, port, protocol } = window.location
+  const isViteDev = hostname === 'localhost' && port === '3000'
+  if (isViteDev) return 'ws://localhost:8080'
+  const wsProto = protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${wsProto}//${window.location.host}`
+}
 
 type HelloMessage = Extract<ServerMessage, { type: 'hello' }>
 
@@ -82,7 +95,7 @@ class NetworkClientImpl implements NetworkClient {
   }
 }
 
-export function connect(url: string = DEFAULT_WS_URL): Promise<NetworkClient> {
+export function connect(url: string = defaultWsUrl()): Promise<NetworkClient> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url)
 

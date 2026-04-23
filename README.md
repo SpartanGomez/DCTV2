@@ -50,8 +50,26 @@ npm run format        # prettier write
 
 ```bash
 npm run build         # tsc -p tsconfig.server.json && vite build
-npm run start         # node dist/server/index.js
+npm run start         # node dist/server/server/index.js  — serves SPA + WS on :8080
 ```
+
+## Deploy
+
+One Node process serves both the Vite-built SPA and the WS upgrade on the same port, so any container host works.
+
+```bash
+docker build -t dct .
+docker run -p 8080:8080 dct
+# → http://localhost:8080
+```
+
+Environment variables:
+- `PORT` — bind port (default `8080`)
+- `DCT_TOURNAMENT_SIZE` — match count per tournament (default `8`)
+- `DCT_BOT_FILL_WAIT_MS` — lobby wait before bot backfill (default `15000`)
+- `DCT_TURN_TIMER_MS` — seconds per turn (default `30000`)
+- `DCT_FORCE_ARENA` — pin one arena for testing (default: random)
+- `DCT_SERVE_STATIC` — set to `0` to skip the SPA static handler (dev uses this; Vite serves on :3000)
 
 ## Branching
 
