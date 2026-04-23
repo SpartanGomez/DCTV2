@@ -161,6 +161,18 @@ export class MatchScene implements Scene {
    * (decrements modulo 4); E rotates CW (increments). Server has no idea.
    */
   private cameraRotation: CameraRotation = 0
+  /**
+   * Active 150 ms ease-in-out rotation tween (SPEC v2 §6.5, M7.5 DoD).
+   * While set, Q/E input is gated and `root.alpha` dips to 0.35 at the
+   * midpoint where the rotation index snaps. Null when idle.
+   */
+  private rotationTween: { startMs: number; from: CameraRotation; to: CameraRotation } | null = null
+  private static readonly ROTATION_TWEEN_MS = 150
+  /** Most-recent tile the pointer hovered — fuels the F3 debug overlay. */
+  private hoveredTile: Position | null = null
+  /** F3 debug overlay visibility + backing text object. */
+  private debugOverlayVisible = false
+  private debugText: Text | null = null
 
   constructor(state: MatchState, youAre: PlayerId, handlers: MatchSceneHandlers) {
     this.state = state
@@ -183,7 +195,9 @@ export class MatchScene implements Scene {
     this.drawFogAndGhosts()
     this.drawHud(renderer)
     this.tickFn = () => {
+      this.tickRotationTween()
       this.refreshHud()
+      this.refreshDebugOverlay()
     }
     renderer.app.ticker.add(this.tickFn)
     this.boundRenderer = renderer
@@ -223,21 +237,72 @@ export class MatchScene implements Scene {
     return this.cameraRotation
   }
 
+  /** True while a rotation tween is still running — input gate for Q/E. */
+  get isRotating(): boolean {
+    return this.rotationTween !== null
+  }
+
   /** SPEC v2 §6.5 — Q rotates counter-clockwise. */
   rotateCameraCcw(): void {
-    this.setRotation(((this.cameraRotation + 3) % 4) as CameraRotation)
+    if (this.rotationTween) return
+    this.beginRotationTween(((this.cameraRotation + 3) % 4) as CameraRotation)
   }
 
   /** SPEC v2 §6.5 — E rotates clockwise. */
   rotateCameraCw(): void {
-    this.setRotation(((this.cameraRotation + 1) % 4) as CameraRotation)
+    if (this.rotationTween) return
+    this.beginRotationTween(((this.cameraRotation + 1) % 4) as CameraRotation)
   }
 
-  private setRotation(next: CameraRotation): void {
+  private beginRotationTween(next: CameraRotation): void {
     if (next === this.cameraRotation) return
-    this.cameraRotation = next
     console.log(`[client] camera rotation -> ${String(next * 90)}°`)
-    this.redrawAll()
+    this.rotationTween = {
+      startMs: performance.now(),
+      from: this.cameraRotation,
+      to: next,
+    }
+  }
+
+  /**
+   * Advance the rotation tween on each tick. Called from the ticker callback
+   * registered in `mount`. Uses an ease-in-out alpha dip (1 → 0.35 → 1) with
+   * the rotation index snapping at the midpoint so the transition reads as a
+   * deliberate step rather than a snap.
+   */
+  private tickRotationTween(): void {
+    const t = this.rotationTween
+    if (!t) return
+    const elapsed = performance.now() - t.startMs
+    const p = Math.min(1, Math.max(0, elapsed / MatchScene.ROTATION_TWEEN_MS))
+    // Ease-in-out sine (0 at edges, 1 at midpoint).
+    const dip = 0.5 - 0.5 * Math.cos(Math.PI * 2 * p)
+    this.root.alpha = 1 - 0.65 * dip
+    const hitMidpoint = p >= 0.5 && this.cameraRotation === t.from
+    if (hitMidpoint) {
+      this.cameraRotation = t.to
+      this.redrawAll()
+    }
+    if (p >= 1) {
+      this.root.alpha = 1
+      this.rotationTween = null
+      if (this.cameraRotation !== t.to) {
+        // Safety net: if we somehow never crossed the midpoint commit, snap now.
+        this.cameraRotation = t.to
+        this.redrawAll()
+      }
+    }
+  }
+
+  /** F3 — toggle the debug overlay (rotation + hovered tile height). */
+  toggleDebugOverlay(): void {
+    this.debugOverlayVisible = !this.debugOverlayVisible
+    if (this.debugText) this.debugText.visible = this.debugOverlayVisible
+    console.log(`[client] debug overlay ${this.debugOverlayVisible ? 'on' : 'off'}`)
+  }
+
+  get isDebugOverlayVisible(): boolean {
+    return this.debugOverlayVisible
   }
 
   private redrawAll(): void {
@@ -328,9 +393,13 @@ export class MatchScene implements Scene {
     })
     g.on('pointerover', () => {
       g.tint = TILE_HOVER
+      this.hoveredTile = { x: gx, y: gy }
     })
     g.on('pointerout', () => {
       g.tint = 0xffffff
+      if (this.hoveredTile && this.hoveredTile.x === gx && this.hoveredTile.y === gy) {
+        this.hoveredTile = null
+      }
     })
     this.tileAt.push(g)
     return g
@@ -531,12 +600,38 @@ export class MatchScene implements Scene {
     text.y = -this.root.y + 16
     this.hudLayer.addChild(text)
     this.hudText = text
+
+    // F3 debug overlay (SPEC v2 §6.5, M7.5 DoD) — hidden until toggled.
+    const debug = new Text({
+      text: '',
+      style: {
+        fontFamily: 'monospace',
+        fontSize: 12,
+        fill: 0xffcc66,
+      },
+    })
+    debug.x = -this.root.x + 16
+    debug.y = -this.root.y + 40
+    debug.visible = false
+    this.hudLayer.addChild(debug)
+    this.debugText = debug
     // Suppress unused param lint; renderer not needed past mount.
     void renderer
   }
 
   private refreshHud(): void {
     if (this.hudText) this.hudText.text = this.hudString()
+  }
+
+  private refreshDebugOverlay(): void {
+    if (!this.debugText || !this.debugOverlayVisible) return
+    const rotDeg = this.cameraRotation * 90
+    const h = this.hoveredTile
+    const hoverStr = h
+      ? `(${String(h.x)},${String(h.y)}) h=${String(this.state.grid.tiles[h.y]?.[h.x]?.height ?? 1)}`
+      : '—'
+    const tweenStr = this.rotationTween ? ' (tween)' : ''
+    this.debugText.text = `[F3] rot: ${String(rotDeg)}°${tweenStr} · hover: ${hoverStr}`
   }
 
   private hudString(): string {
