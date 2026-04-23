@@ -76,10 +76,15 @@ test('fog hides the distant enemy; scout reveals them', async ({ browser }) => {
     expect(infoA.matchId).toBe(infoB.matchId)
 
     const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
-    const isAActive = active === pageA
     // A spawns (1,4), B spawns (6,3). Sight range 2 — both players out of sight.
-    // Whoever's active scouts around the enemy's spawn.
-    const enemySpawn = isAActive ? { x: 6, y: 3 } : { x: 1, y: 4 }
+    // Whoever's active scouts around the enemy's spawn. Derive enemy spawn
+    // from the *observer* (non-active) page's own position rather than page
+    // identity, since the server may race the pageA↔slot0 mapping on
+    // back-to-back tests.
+    const observer = active === pageA ? pageB : pageA
+    const observerPos = await observer.evaluate(() => window.__dct?.getOwnPos() ?? null)
+    if (!observerPos) throw new Error('observer has no position')
+    const enemySpawn = observerPos
 
     const scouted = active.waitForEvent('console', {
       predicate: (m) =>
@@ -146,9 +151,16 @@ test('full kill flow: attacker walks into sight + attacks until match ends', asy
     const attacker = infoA.currentTurn === infoA.youAre ? pageA : pageB
     const victim = attacker === pageA ? pageB : pageA
 
-    const attackerIsA = attacker === pageA
-    // Attacker marches 5 tiles to land adjacent to the victim.
-    const march = attackerIsA ? { x: 6, y: 4 } : { x: 1, y: 3 }
+    // Attacker marches 5 tiles along its spawn row to land adjacent to the
+    // victim. Spawns are (1,4) and (6,3); derive the march target from actual
+    // attacker position rather than page identity (see server-race note above).
+    const attackerPos = await attacker.evaluate(() => window.__dct?.getOwnPos() ?? null)
+    if (!attackerPos) throw new Error('attacker has no position')
+    const victimPos = await victim.evaluate(() => window.__dct?.getOwnPos() ?? null)
+    if (!victimPos) throw new Error('victim has no position')
+    // March across to the victim's column, staying on the attacker's row —
+    // lands orthogonally adjacent regardless of which spawn the attacker holds.
+    const march = { x: victimPos.x, y: attackerPos.y }
 
     // Round 1: walk to adjacency (pulls victim into sight), then end turn.
     await waitForOk(attacker, async () => {
@@ -272,6 +284,170 @@ test('class-selection lobby: mage vs heretic pair + match starts', async ({ brow
     // Both tabs transitioned from LobbyScene to MatchScene (canvas visible).
     await expect(pageA.locator('canvas')).toBeVisible()
     await expect(pageB.locator('canvas')).toBeVisible()
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+// ============================================================
+// M7.5 — rotatable camera, multi-height terrain, jump-gating, 4-facing.
+// SPEC v2 §6.3 / §6.5 / §6.6.
+//
+// The pit arena puts its `high_ground` perimeter at stack height 4. Spawn A
+// is (1,4), spawn B is (6,3), both interior (height 1). For a spawn-adjacent
+// perimeter tile:
+//   - A (1,4) → (0,4) is the adjacent perimeter tile (Δh = 3).
+//   - B (6,3) → (7,3) is the adjacent perimeter tile (Δh = 3).
+// Knight jump=2 → rejected. Mage jump=3 → allowed.
+// ============================================================
+
+// The server's pageA↔playerA mapping is racy between tests (a previous test's
+// socket may still be pending cleanup), so tests derive spawn/target data from
+// the live match state rather than from page identity. After matchStart, read
+// the active page's own position and compute the neighbor perimeter tile.
+async function readOwnPos(page: Page): Promise<{ x: number; y: number }> {
+  const pos = await page.evaluate(() => window.__dct?.getOwnPos() ?? null)
+  if (!pos) throw new Error('active page has no getOwnPos result')
+  return pos
+}
+
+function perimeterJumpTarget(pos: { x: number; y: number }): { x: number; y: number } {
+  // Pit interior spawns are always at x=1 (A) or x=6 (B). The adjacent
+  // perimeter column is the outer edge on that side.
+  return { x: pos.x === 1 ? 0 : 7, y: pos.y }
+}
+
+test('M7.5 — Knight is rejected with height_exceeds_jump on the height-4 perimeter', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    const [infoA] = await Promise.all([msA, msB])
+    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
+
+    // Confirm arena shape is server-authoritative.
+    const perimH = await active.evaluate(() => window.__dct?.getTileHeight(0, 0))
+    expect(perimH).toBe(4)
+    const interiorH = await active.evaluate(() => window.__dct?.getTileHeight(3, 4))
+    expect(interiorH).toBe(1)
+
+    const pos = await readOwnPos(active)
+    const target = perimeterJumpTarget(pos)
+    const rejected = active.waitForEvent('console', {
+      predicate: (m) => m.text().includes('actionResult: rejected (height_exceeds_jump)'),
+      timeout: 5_000,
+    })
+    await active.evaluate(
+      (t: { x: number; y: number }) => { window.__dct?.move(t.x, t.y) },
+      target,
+    )
+    await rejected
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — Mage (jump 3) can scale the same height-4 perimeter Knight cannot', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'mage')
+    await enterLobbyAndReady(pageB, 'mage')
+    const [infoA] = await Promise.all([msA, msB])
+    const active = infoA.currentTurn === infoA.youAre ? pageA : pageB
+    const pos = await readOwnPos(active)
+    const target = perimeterJumpTarget(pos)
+
+    await waitForOk(active, () =>
+      active.evaluate(
+        (t: { x: number; y: number }) => { window.__dct?.move(t.x, t.y) },
+        target,
+      ),
+    )
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — camera rotation is client-only; pageA rotates, pageB stays put', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    await Promise.all([msA, msB])
+
+    const rotA0 = await pageA.evaluate(() => window.__dct?.getCameraRotation())
+    const rotB0 = await pageB.evaluate(() => window.__dct?.getCameraRotation())
+    expect(rotA0).toBe(0)
+    expect(rotB0).toBe(0)
+
+    const rotated = pageA.waitForEvent('console', {
+      predicate: (m) => m.text().includes('camera rotation -> 90°'),
+      timeout: 5_000,
+    })
+    await pageA.evaluate(() => { window.__dct?.rotateCamera('cw') })
+    await rotated
+
+    const rotA1 = await pageA.evaluate(() => window.__dct?.getCameraRotation())
+    const rotB1 = await pageB.evaluate(() => window.__dct?.getCameraRotation())
+    expect(rotA1).toBe(1)
+    expect(rotB1).toBe(0) // client-only — peer unaffected
+  } finally {
+    await ctxA.close()
+    await ctxB.close()
+  }
+})
+
+test('M7.5 — initial facings: A (spawn 1,4) faces E; B (spawn 6,3) faces W', async ({
+  browser,
+}) => {
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  try {
+    const pageA = await ctxA.newPage()
+    const pageB = await ctxB.newPage()
+    const msA = waitForMatchStart(pageA)
+    const msB = waitForMatchStart(pageB)
+    await enterLobbyAndReady(pageA, 'knight')
+    await enterLobbyAndReady(pageB, 'knight')
+    await Promise.all([msA, msB])
+
+    const facingA = await pageA.evaluate(() => window.__dct?.getOwnFacing())
+    const facingB = await pageB.evaluate(() => window.__dct?.getOwnFacing())
+    const posA = await pageA.evaluate(() => window.__dct?.getOwnPos())
+    const posB = await pageB.evaluate(() => window.__dct?.getOwnPos())
+    // The server decides which socket becomes player A vs B; don't assume
+    // pageA↔(1,4). Verify that the pair of (pos, facing) observations is the
+    // expected spawn set: (1,4)→E and (6,3)→W.
+    const observed = new Map<string, string | null>([
+      [`${String(posA?.x)},${String(posA?.y)}`, facingA ?? null],
+      [`${String(posB?.x)},${String(posB?.y)}`, facingB ?? null],
+    ])
+    expect(observed.get('1,4')).toBe('E')
+    expect(observed.get('6,3')).toBe('W')
   } finally {
     await ctxA.close()
     await ctxB.close()

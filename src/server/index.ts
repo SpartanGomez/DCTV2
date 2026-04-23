@@ -389,8 +389,10 @@ function handleMessage(pid: PlayerId, socket: WebSocket, raw: RawData): void {
       return
     case 'joinTournament':
     case 'ready': {
-      // Both paths auto-join. selectClass updates class on existing slot.
-      tournament.updateClass(pid, 'knight')
+      // The slot was created by addPlayer on socket connect; `ready` signals
+      // that the client has finished the class-select step and we can start
+      // once all slots have signalled the same. selectClass owns class change.
+      tournament.markReady(pid)
       return
     }
     case 'selectClass':
@@ -434,6 +436,12 @@ wss.on('connection', (socket: WebSocket) => {
   sessions.set(sessionToken, pid)
   sockets.set(pid, socket)
   send(socket, { type: 'hello', serverVersion: SERVER_VERSION, sessionToken })
+
+  // If the previous tournament already declared a champion, start a fresh
+  // one eagerly so the new connection's addPlayer lands in `lobby` phase
+  // (avoids a race where the complete→recreate transition was still waiting
+  // for a socket-close tick).
+  if (tournament.isComplete()) tournament = makeTournament()
 
   // Auto-enqueue into tournament on connect, reusing the socket's pid so
   // that action routing via handleMessage(pid, ...) stays consistent.

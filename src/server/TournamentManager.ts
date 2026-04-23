@@ -47,6 +47,14 @@ export interface TournamentSlot {
   classId: ClassId
   name: string
   isBot: boolean
+  /**
+   * Has the client confirmed it's finished in the lobby (class locked in)?
+   * Bots are always `true`. Real players flip `true` when they send `ready`
+   * (or `joinTournament`). The tournament does not start until every slot
+   * is filled AND every slot is ready — this avoids starting a match with
+   * a stale default class before the client's `selectClass` lands.
+   */
+  ready: boolean
   /** Perk selected for the current round (cleared after each match). */
   selectedPerk: PerkId | null
 }
@@ -112,12 +120,35 @@ export class TournamentManager {
     if (this.phase !== 'lobby') return null
     if (this.slots.length >= this.tournamentSize) return null
     const pid = existingId ?? makePlayerId(randomUUID())
-    const slot: TournamentSlot = { playerId: pid, socket, classId, name, isBot: false, selectedPerk: null }
+    const slot: TournamentSlot = {
+      playerId: pid, socket, classId, name, isBot: false, ready: false, selectedPerk: null,
+    }
     this.slots.push(slot)
     this.playerIndex.set(pid, this.slots.length - 1)
     if (this.slots.length === 1) this.scheduleBotFill()
-    if (this.slots.length === this.tournamentSize) this.startTournament()
+    this.maybeStartTournament()
     return pid
+  }
+
+  /**
+   * Mark a human slot ready. Called from the server's `ready` /
+   * `joinTournament` handler after the client has locked in its class.
+   * No-op if the player is absent or already ready.
+   */
+  markReady(playerId: PlayerId): void {
+    const idx = this.playerIndex.get(playerId)
+    if (idx === undefined) return
+    const slot = this.slots[idx]
+    if (!slot || slot.isBot || slot.ready) return
+    this.slots[idx] = { ...slot, ready: true }
+    this.maybeStartTournament()
+  }
+
+  private maybeStartTournament(): void {
+    if (this.phase !== 'lobby') return
+    if (this.slots.length < this.tournamentSize) return
+    if (!this.slots.every((s) => s.ready || s.isBot)) return
+    this.startTournament()
   }
 
   updateClass(playerId: PlayerId, classId: ClassId): void {
@@ -140,8 +171,11 @@ export class TournamentManager {
         ...slot,
         socket: null,
         isBot: true,
+        ready: true,
         name: `Bot_${String(idx + 1)}`,
       }
+      // The dropout may have been the last blocker on starting.
+      this.maybeStartTournament()
     } else {
       // Mark socket as gone; ongoing match will handle disconnect naturally.
       this.slots[idx] = { ...slot, socket: null }
@@ -304,11 +338,14 @@ export class TournamentManager {
           classId,
           name: `Bot_${String(idx + 1)}`,
           isBot: true,
+          ready: true,
           selectedPerk: null,
         }
         this.slots.push(slot)
         this.playerIndex.set(pid, idx)
       }
+      // Bot fill runs even when human slots haven't signalled `ready` yet —
+      // that's fine for timed-out lobbies; start regardless.
       this.startTournament()
     }, this.botFillWaitMs)
   }

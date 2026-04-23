@@ -61,3 +61,10 @@ jobs:
           name: playwright-report
           path: playwright-report
           retention-days: 7
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results
+          retention-days: 7

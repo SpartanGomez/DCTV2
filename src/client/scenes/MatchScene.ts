@@ -236,6 +236,7 @@ export class MatchScene implements Scene {
   private setRotation(next: CameraRotation): void {
     if (next === this.cameraRotation) return
     this.cameraRotation = next
+    console.log(`[client] camera rotation -> ${String(next * 90)}°`)
     this.redrawAll()
   }
 
