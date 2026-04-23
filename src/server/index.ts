@@ -3,7 +3,10 @@
 // All match logic lives in GameEngine; tournament/bracket in TournamentManager.
 
 import { randomUUID } from 'node:crypto'
+import { readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { extname, join, normalize, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import { SERVER_VERSION, TURN_TIMER_MS } from '../shared/constants.js'
 import {
@@ -411,6 +414,73 @@ function handleMessage(pid: PlayerId, socket: WebSocket, raw: RawData): void {
   }
 }
 
+// In production, the Vite build lands in `./dist/`. The server serves the
+// SPA from that directory so a single Node process handles both the static
+// bundle and the WS upgrade on the same port — simplifies deploy. In dev,
+// Vite handles the static side on :3000 and nothing ever routes through here.
+const SERVE_STATIC = process.env.DCT_SERVE_STATIC !== '0'
+// Compiled server lives at dist/server/server/index.js; the client bundle
+// at dist/client/. From the running server file, `../../client/` lands
+// in the right place. In `tsx` dev it resolves to src/server/../client/
+// which doesn't exist — DCT_SERVE_STATIC=0 in the dev script keeps this
+// path cold, and Vite handles the static side on :3000 instead.
+const DIST_ROOT = resolve(fileURLToPath(new URL('../../client/', import.meta.url)))
+
+const MIME: Readonly<Record<string, string>> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ogg': 'audio/ogg',
+  '.mp3': 'audio/mpeg',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+}
+
+async function serveStatic(reqUrl: string, res: ServerResponse): Promise<boolean> {
+  // Strip query string and anchor, default "/" to index.html.
+  const pathOnly = reqUrl.split('?')[0]?.split('#')[0] ?? '/'
+  const rel = pathOnly === '/' ? 'index.html' : pathOnly.replace(/^\/+/, '')
+  // Normalize + confine to DIST_ROOT so crafted "../" URLs can't escape.
+  const full = normalize(join(DIST_ROOT, rel))
+  if (!full.startsWith(DIST_ROOT)) {
+    res.writeHead(403).end('forbidden')
+    return true
+  }
+  let filePath = full
+  try {
+    const s = await stat(filePath)
+    if (s.isDirectory()) filePath = join(filePath, 'index.html')
+  } catch {
+    // Missing file → SPA fallback to index.html so deep links still work.
+    filePath = join(DIST_ROOT, 'index.html')
+    try {
+      await stat(filePath)
+    } catch {
+      return false
+    }
+  }
+  try {
+    const body = await readFile(filePath)
+    const ct = MIME[extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+    res.writeHead(200, {
+      'content-type': ct,
+      'cache-control': filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=604800',
+    })
+    res.end(body)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const http = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.url === '/health') {
     const t = tournament as unknown as { activeMatches: Map<unknown, unknown> }
@@ -422,6 +492,14 @@ const http = createServer((req: IncomingMessage, res: ServerResponse) => {
       playersConnected: wss.clients.size,
       serverVersion: SERVER_VERSION,
     }))
+    return
+  }
+  if (SERVE_STATIC) {
+    void serveStatic(req.url ?? '/', res).then((served) => {
+      if (served) return
+      res.writeHead(404, { 'content-type': 'text/plain' })
+      res.end('not found')
+    })
     return
   }
   res.writeHead(404, { 'content-type': 'text/plain' })
