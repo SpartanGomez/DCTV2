@@ -10,6 +10,7 @@ import { MatchScene } from './scenes/MatchScene.js'
 import { ResultsScene } from './scenes/ResultsScene.js'
 import { PerkDraftScene } from './scenes/PerkDraftScene.js'
 import { BracketScene } from './scenes/BracketScene.js'
+import { SpectatorScene } from './scenes/SpectatorScene.js'
 import { manhattanDistance, orthogonalPath } from '../shared/grid.js'
 import { CLASS_ABILITIES, CLASS_STATS } from '../shared/constants.js'
 import type { AbilityId, BracketState, ClassId, MatchId, PlayerId, Position, UnitId } from '../shared/types.js'
@@ -217,9 +218,12 @@ async function main(): Promise<void> {
       ev.preventDefault()
       sendEndTurn()
     }
-    // Q/E rotate the camera (client-only — server has no idea).
-    if (ev.key === 'q' || ev.key === 'Q') activeScene?.rotateCameraCcw()
-    if (ev.key === 'e' || ev.key === 'E') activeScene?.rotateCameraCw()
+    // Q/E rotate the camera (client-only — server has no idea). Works in
+    // both player and spectator modes — spectator scene forwards to its
+    // inner MatchScene.
+    const rotTarget = activeScene ?? spectatorScene
+    if (ev.key === 'q' || ev.key === 'Q') rotTarget?.rotateCameraCcw()
+    if (ev.key === 'e' || ev.key === 'E') rotTarget?.rotateCameraCw()
     if (ev.key === 'd' || ev.key === 'D') sendDefend()
     if (ev.key === 'u' || ev.key === 'U') sendUsePickup()
     if (ev.key === 's' || ev.key === 'S') {
@@ -234,7 +238,7 @@ async function main(): Promise<void> {
     // F3 toggles the SPEC v2 §6.5 debug overlay (rotation + hovered tile height).
     if (ev.key === 'F3') {
       ev.preventDefault()
-      activeScene?.toggleDebugOverlay()
+      ;(activeScene ?? spectatorScene)?.toggleDebugOverlay()
     }
   })
   const wrappedSendMove = sendMove
@@ -404,14 +408,34 @@ async function main(): Promise<void> {
     }))
   })
 
-  net.on('spectatorState', (msg) => {
-    // Spectators see the raw unfiltered match state.
-    if (activeScene instanceof MatchScene) {
-      activeScene.update(msg.match)
-    } else if (myPlayerId) {
-      activeScene = new MatchScene(msg.match, myPlayerId, { onTileClick: () => void 0 })
-      scenes.show(activeScene)
+  let spectatorScene: SpectatorScene | null = null
+
+  const leaveSpectator = (): void => {
+    net.send({ type: 'leaveSpectator' })
+    spectatorScene = null
+    activeScene = null
+    // Back to the bracket. latestBracket is always populated at this point —
+    // a player can only spectate after matchOver + tournamentUpdate.
+    if (latestBracket && myPlayerId) {
+      const my = myPlayerId
+      bracketScene = new BracketScene(latestBracket, my, {
+        onSpectate: (mid) => net.send({ type: 'spectate', matchId: mid as MatchId }),
+      })
+      scenes.show(bracketScene)
     }
+  }
+
+  net.on('spectatorState', (msg) => {
+    if (spectatorScene) {
+      spectatorScene.update(msg.match)
+      return
+    }
+    console.log(`[client] spectate: match=${msg.match.matchId}`)
+    spectatorScene = new SpectatorScene(msg.match, { onLeave: leaveSpectator })
+    // Clear any stale match/bracket scene pointers so the keyboard handlers
+    // route Q/E to the spectator's inner MatchScene via scenes.active.
+    activeScene = null
+    scenes.show(spectatorScene)
   })
 }
 
