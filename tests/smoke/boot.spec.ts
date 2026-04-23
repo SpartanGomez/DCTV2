@@ -404,16 +404,21 @@ test('M7.5 — camera rotation is client-only; pageA rotates, pageB stays put', 
     expect(rotA0).toBe(0)
     expect(rotB0).toBe(0)
 
+    // Fire two rotates back-to-back in the SAME evaluate so the second call
+    // hits while the tween is still active (no test-harness round-trip
+    // between them). The input gate must reject the second rotate.
     const rotated = pageA.waitForEvent('console', {
       predicate: (m) => m.text().includes('camera rotation -> 90°'),
       timeout: 5_000,
     })
-    await pageA.evaluate(() => { window.__dct?.rotateCamera('cw') })
+    const wasRotatingAfterSecondCall = await pageA.evaluate(() => {
+      window.__dct?.rotateCamera('cw')
+      const rotating = window.__dct?.isRotating() ?? false
+      window.__dct?.rotateCamera('cw') // must be rejected by the gate
+      return rotating
+    })
     await rotated
-    // Tween is in-flight (150 ms) — a second Q/E must be rejected by the input
-    // gate; the visible rotation does not advance to 180°.
-    expect(await pageA.evaluate(() => window.__dct?.isRotating())).toBe(true)
-    await pageA.evaluate(() => { window.__dct?.rotateCamera('cw') })
+    expect(wasRotatingAfterSecondCall).toBe(true)
     // Wait for the tween to settle, then confirm the final index is 1, not 2.
     await pageA.waitForFunction(() => window.__dct?.isRotating() === false, undefined, { timeout: 2_000 })
 
