@@ -340,6 +340,14 @@ export class TournamentManager {
     this.botFillTimer = setTimeout(() => {
       this.botFillTimer = null
       if (this.phase !== 'lobby') return
+      // Commit whatever class each non-ready human has selected so far — their
+      // timer window expired. This closes the class-select race (a human who
+      // fired selectClass but hadn't yet fired ready still gets the right
+      // class applied rather than being default-knighted).
+      for (let i = 0; i < this.slots.length; i++) {
+        const s = this.slots[i]
+        if (s && !s.isBot && !s.ready) this.slots[i] = { ...s, ready: true }
+      }
       while (this.slots.length < this.tournamentSize) {
         const idx = this.slots.length
         const pid = makePlayerId(randomUUID())
