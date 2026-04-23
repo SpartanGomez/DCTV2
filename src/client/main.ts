@@ -13,6 +13,7 @@ import { BracketScene } from './scenes/BracketScene.js'
 import { SpectatorScene } from './scenes/SpectatorScene.js'
 import { TitleScene } from './scenes/TitleScene.js'
 import { StatsScene } from './scenes/StatsScene.js'
+import { playMusic, playSfx, stopMusic } from './audio.js'
 import { manhattanDistance, orthogonalPath } from '../shared/grid.js'
 import { CLASS_ABILITIES, CLASS_STATS } from '../shared/constants.js'
 import type { AbilityId, BracketState, ClassId, MatchId, PlayerId, Position, UnitId } from '../shared/types.js'
@@ -111,9 +112,11 @@ async function main(): Promise<void> {
     if (titleDismissed) return
     titleDismissed = true
     console.log('[client] title dismissed — entering lobby')
+    playSfx('ui_click')
     scenes.show(lobby)
   }
   scenes.show(new TitleScene({ onEnter: enterLobby }))
+  playMusic('title')
 
   const sendMove = (target: Position): void => {
     if (!activeScene) return
@@ -338,6 +341,7 @@ async function main(): Promise<void> {
     hideBoot()
     activeScene = new MatchScene(msg.match, msg.youAre, { onTileClick: scoutingAwareTileClick })
     scenes.show(activeScene)
+    playMusic('match')
   })
 
   net.on('stateUpdate', (msg) => {
@@ -375,6 +379,9 @@ async function main(): Promise<void> {
     console.log(
       `[client] matchOver: winner=${msg.winner} outcome=${outcome} surrender=${String(surrender)}`,
     )
+    if (surrender) playSfx('surrender_bell')
+    playSfx(msg.winner === my ? 'match_win' : 'match_loss')
+    playMusic('results')
     // Show ResultsScene briefly; BracketScene follows once tournamentUpdate arrives.
     scenes.show(new ResultsScene(msg.winner, my, surrender))
     activeScene = null
@@ -443,6 +450,7 @@ async function main(): Promise<void> {
     // the viewport exclusively.
     activeScene = null
     bracketScene = null
+    stopMusic()
     scenes.show(new StatsScene(msg.champion, msg.bracket, my, {
       onPlayAgain: () => {
         // Full page reload is the simplest "reset" — reconnects a fresh
