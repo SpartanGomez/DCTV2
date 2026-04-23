@@ -278,6 +278,12 @@ export type ServerMessage =
   | { type: 'perkOptions'; perks: PerkId[] }
   /** Full state for spectators. */
   | { type: 'spectatorState'; match: MatchState }
+  /**
+   * Emitted exactly once per tournament when the champion is crowned.
+   * Payload includes the final bracket so clients can render placements
+   * without keeping their own mirrored history.
+   */
+  | { type: 'tournamentComplete'; champion: PlayerId; bracket: BracketState }
 
 export interface BracketState {
   rounds: BracketRound[]

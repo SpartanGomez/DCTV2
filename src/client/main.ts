@@ -11,6 +11,8 @@ import { ResultsScene } from './scenes/ResultsScene.js'
 import { PerkDraftScene } from './scenes/PerkDraftScene.js'
 import { BracketScene } from './scenes/BracketScene.js'
 import { SpectatorScene } from './scenes/SpectatorScene.js'
+import { TitleScene } from './scenes/TitleScene.js'
+import { StatsScene } from './scenes/StatsScene.js'
 import { manhattanDistance, orthogonalPath } from '../shared/grid.js'
 import { CLASS_ABILITIES, CLASS_STATS } from '../shared/constants.js'
 import type { AbilityId, BracketState, ClassId, MatchId, PlayerId, Position, UnitId } from '../shared/types.js'
@@ -103,7 +105,15 @@ async function main(): Promise<void> {
       console.log(`[client] ready`)
     },
   })
-  scenes.show(lobby)
+
+  let titleDismissed = false
+  const enterLobby = (): void => {
+    if (titleDismissed) return
+    titleDismissed = true
+    console.log('[client] title dismissed — entering lobby')
+    scenes.show(lobby)
+  }
+  scenes.show(new TitleScene({ onEnter: enterLobby }))
 
   const sendMove = (target: Position): void => {
     if (!activeScene) return
@@ -424,6 +434,23 @@ async function main(): Promise<void> {
       scenes.show(bracketScene)
     }
   }
+
+  net.on('tournamentComplete', (msg) => {
+    const my = myPlayerId
+    if (!my) return
+    console.log(`[client] tournamentComplete: champion=${msg.champion}`)
+    // Clear any live match / spectator references so the stats screen owns
+    // the viewport exclusively.
+    activeScene = null
+    bracketScene = null
+    scenes.show(new StatsScene(msg.champion, msg.bracket, my, {
+      onPlayAgain: () => {
+        // Full page reload is the simplest "reset" — reconnects a fresh
+        // socket, lands on TitleScene, server sees a new pid.
+        window.location.reload()
+      },
+    }))
+  })
 
   net.on('spectatorState', (msg) => {
     if (spectatorScene) {

@@ -298,7 +298,9 @@ export class TournamentManager {
         const winners = this.winnersOfCurrentRound()
         if (winners.length === 1) {
           this.phase = 'complete'
-          console.log(`[tournament] ${this.id} complete — champion: ${winners[0]}`)
+          const champion = winners[0]
+          console.log(`[tournament] ${this.id} complete — champion: ${champion}`)
+          if (champion) this.broadcastTournamentComplete(champion)
         } else {
           this.startPerkDraft(winners)
         }
@@ -318,6 +320,17 @@ export class TournamentManager {
     }
   }
 
+  private broadcastTournamentComplete(champion: PlayerId): void {
+    const bracket: BracketState = { rounds: this.rounds, currentRound: this.currentRound }
+    for (const slot of this.slots) {
+      if (!slot.socket || slot.isBot) continue
+      this.send(slot.socket, { type: 'tournamentComplete', champion, bracket })
+    }
+    for (const [, spec] of this.spectators) {
+      this.send(spec.socket, { type: 'tournamentComplete', champion, bracket })
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Internal: bot fill
   // -------------------------------------------------------------------------
@@ -327,6 +340,14 @@ export class TournamentManager {
     this.botFillTimer = setTimeout(() => {
       this.botFillTimer = null
       if (this.phase !== 'lobby') return
+      // Commit whatever class each non-ready human has selected so far — their
+      // timer window expired. This closes the class-select race (a human who
+      // fired selectClass but hadn't yet fired ready still gets the right
+      // class applied rather than being default-knighted).
+      for (let i = 0; i < this.slots.length; i++) {
+        const s = this.slots[i]
+        if (s && !s.isBot && !s.ready) this.slots[i] = { ...s, ready: true }
+      }
       while (this.slots.length < this.tournamentSize) {
         const idx = this.slots.length
         const pid = makePlayerId(randomUUID())
