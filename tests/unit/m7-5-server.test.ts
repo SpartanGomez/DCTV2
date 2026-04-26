@@ -24,7 +24,6 @@ import {
   type GameAction,
   type MatchState,
   type TerrainType,
-  type UnitId,
 } from '../../src/shared/types.js'
 
 const PA = playerId('p-a')
@@ -317,7 +316,7 @@ describe('ability: facing update on cast (SPEC v2 §6.6)', () => {
     const cost = ABILITY_ENERGY_COST.cinder_bolt
     const result = applyAbility(
       state,
-      { kind: 'ability', unitId: A_ID, abilityId: 'cinder_bolt', targetId: B_ID as UnitId },
+      { kind: 'ability', unitId: A_ID, abilityId: 'cinder_bolt', targetId: B_ID },
       cost,
       0,
     )

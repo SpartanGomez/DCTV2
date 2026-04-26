@@ -120,7 +120,7 @@ export class PerkDraftScene implements Scene {
     this.timerText.y = renderer.height - 48
     this.root.addChild(this.timerText)
 
-    this.tickFn = () => this.refreshTimer()
+    this.tickFn = () => { this.refreshTimer(); }
     renderer.app.ticker.add(this.tickFn)
   }
 
@@ -152,7 +152,7 @@ export class PerkDraftScene implements Scene {
     container.addChild(icon)
 
     const name = new Text({
-      text: PERK_NAME[perkId] ?? perkId,
+      text: PERK_NAME[perkId],
       style: {
         fontFamily: 'monospace',
         fontSize: 13,
@@ -170,7 +170,7 @@ export class PerkDraftScene implements Scene {
     container.addChild(name)
 
     const desc = new Text({
-      text: PERK_BLURB[perkId] ?? '',
+      text: PERK_BLURB[perkId],
       style: {
         fontFamily: 'monospace',
         fontSize: 11,

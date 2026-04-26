@@ -299,8 +299,10 @@ export class TournamentManager {
         if (winners.length === 1) {
           this.phase = 'complete'
           const champion = winners[0]
-          console.log(`[tournament] ${this.id} complete — champion: ${champion}`)
-          if (champion) this.broadcastTournamentComplete(champion)
+          if (champion) {
+            console.log(`[tournament] ${this.id} complete — champion: ${champion}`)
+            this.broadcastTournamentComplete(champion)
+          }
         } else {
           this.startPerkDraft(winners)
         }
@@ -481,13 +483,14 @@ export class TournamentManager {
 
     for (const winner of winners) {
       const idx = this.playerIndex.get(winner)
-      const slot = idx !== undefined ? this.slots[idx] : undefined
+      if (idx === undefined) continue
+      const slot = this.slots[idx]
       if (!slot) continue
       if (slot.isBot) {
         // Bot auto-picks a random perk.
         const perks = drawPerks(3)
         const pick = perks[Math.floor(Math.random() * perks.length)] ?? perks[0] ?? 'bloodlust'
-        this.slots[idx!] = { ...slot, selectedPerk: pick }
+        this.slots[idx] = { ...slot, selectedPerk: pick }
         continue
       }
       if (slot.socket) {

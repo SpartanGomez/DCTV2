@@ -187,8 +187,8 @@ async function main(): Promise<void> {
     if (!unit) return
     if (activeScene.currentState.currentTurn !== myPlayerId) return
     const kit = CLASS_ABILITIES[unit.classId]
-    const abilityId: AbilityId | undefined = kit[index]
-    if (!abilityId) return
+    // `index` is `0 | 1 | 2`; `kit` is a fixed 3-tuple, so this access is total.
+    const abilityId: AbilityId = kit[index]
     // For self-targeted abilities (shield_wall, iron_stance, blood_tithe)
     // we don't need a target. For targeted abilities we need the target.
     const needsTarget = !['shield_wall', 'iron_stance', 'blood_tithe'].includes(abilityId)
@@ -401,7 +401,7 @@ async function main(): Promise<void> {
     if (!activeScene && myPlayerId && !(scenes.active instanceof MatchScene)) {
       const my = myPlayerId
       bracketScene = new BracketScene(msg.bracket, my, {
-        onSpectate: (mid) => net.send({ type: 'spectate', matchId: mid as MatchId }),
+        onSpectate: (mid) => { net.send({ type: 'spectate', matchId: mid as MatchId }); },
       })
       scenes.show(bracketScene)
     }
@@ -417,7 +417,7 @@ async function main(): Promise<void> {
         // Show bracket while waiting for next round.
         if (latestBracket) {
           bracketScene = new BracketScene(latestBracket, my, {
-            onSpectate: (mid) => net.send({ type: 'spectate', matchId: mid as MatchId }),
+            onSpectate: (mid) => { net.send({ type: 'spectate', matchId: mid as MatchId }); },
           })
           scenes.show(bracketScene)
         }
@@ -436,7 +436,7 @@ async function main(): Promise<void> {
     if (latestBracket && myPlayerId) {
       const my = myPlayerId
       bracketScene = new BracketScene(latestBracket, my, {
-        onSpectate: (mid) => net.send({ type: 'spectate', matchId: mid as MatchId }),
+        onSpectate: (mid) => { net.send({ type: 'spectate', matchId: mid as MatchId }); },
       })
       scenes.show(bracketScene)
     }

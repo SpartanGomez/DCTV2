@@ -15,7 +15,6 @@ import {
   type GameAction,
   type MatchId,
   type MatchState,
-  type PerkId,
   type PlayerId,
   type ServerErrorCode,
   type ServerMessage,
@@ -176,7 +175,7 @@ function scheduleMatchTimer(matchId: MatchId): void {
 function driveBotIfNeeded(matchId: MatchId, currentPlayer: PlayerId): void {
   const slot = tournament.getSlotByPlayer(currentPlayer)
   if (!slot?.isBot) return
-  setTimeout(() => runBotTurn(matchId, currentPlayer), 50)
+  setTimeout(() => { runBotTurn(matchId, currentPlayer); }, 50)
 }
 
 function runBotTurn(matchId: MatchId, botId: PlayerId): void {
@@ -248,7 +247,13 @@ function applyBotAction(matchId: MatchId, botId: PlayerId, action: GameAction): 
       }
       return
     }
-    default:
+    // Bots don't currently emit these — exhaustively listed so the
+    // switch-exhaustiveness lint stays satisfied if `GameAction` grows.
+    case 'defend':
+    case 'scout':
+    case 'usePickup':
+    case 'kneel':
+    case 'endTurn':
       return
   }
 }
@@ -402,7 +407,7 @@ function handleMessage(pid: PlayerId, socket: WebSocket, raw: RawData): void {
       tournament.updateClass(pid, parsed.classId)
       return
     case 'selectPerk':
-      tournament.selectPerk(pid, parsed.perkId as PerkId)
+      tournament.selectPerk(pid, parsed.perkId)
       return
     case 'spectate':
       tournament.addSpectator(socket, pid)
@@ -527,7 +532,7 @@ wss.on('connection', (socket: WebSocket) => {
 
   console.log(`[server] ${pid} connected (waiting=${String(wss.clients.size)})`)
 
-  socket.on('message', (raw) => handleMessage(pid, socket, raw))
+  socket.on('message', (raw) => { handleMessage(pid, socket, raw); })
   socket.on('close', () => {
     sessions.delete(sessionToken)
     sockets.delete(pid)

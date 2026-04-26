@@ -106,7 +106,7 @@ export class SpectatorScene implements Scene {
     btn.addChild(btnBg, btnLabel)
     btn.x = r.width - 136
     btn.y = 5
-    btn.on('pointertap', () => this.handlers.onLeave())
+    btn.on('pointertap', () => { this.handlers.onLeave(); })
     this.overlay.addChild(btn)
   }
 }
