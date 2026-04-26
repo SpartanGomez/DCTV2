@@ -184,11 +184,18 @@ export interface MatchSceneHandlers {
 
 export class MatchScene implements Scene {
   readonly root: Container = new Container()
+  /**
+   * Holds the iso world (tiles, units, fog, ghosts). Scaled + translated by
+   * the camera. The hudLayer lives directly on `root` and stays unscaled —
+   * the HUD is viewport-anchored, not world-anchored.
+   */
+  private readonly worldLayer = new Container()
   private readonly tilesLayer = new Container()
   private readonly fogLayer = new Container()
   private readonly unitsLayer = new Container()
   private readonly ghostsLayer = new Container()
   private readonly hudLayer = new Container()
+  private static readonly CAMERA_ZOOM = 1.4
   private readonly tileAt: Graphics[] = []
   private state: MatchState
   private readonly youAre: PlayerId
@@ -223,29 +230,30 @@ export class MatchScene implements Scene {
     this.state = state
     this.youAre = youAre
     this.handlers = handlers
-    this.root.addChild(
+    this.worldLayer.addChild(
       this.tilesLayer,
       this.ghostsLayer,
       this.fogLayer,
       this.unitsLayer,
-      this.hudLayer,
     )
+    this.worldLayer.scale.set(MatchScene.CAMERA_ZOOM)
+    this.root.addChild(this.worldLayer, this.hudLayer)
     this.observeEnemies(state)
   }
 
   mount(renderer: Renderer): void {
-    this.centerStage(renderer.width, renderer.height)
+    this.boundRenderer = renderer
     this.drawGrid()
     this.drawUnits()
     this.drawFogAndGhosts()
     this.drawHud(renderer)
+    this.recenterCamera()
     this.tickFn = () => {
       this.tickRotationTween()
       this.refreshHud()
       this.refreshDebugOverlay()
     }
     renderer.app.ticker.add(this.tickFn)
-    this.boundRenderer = renderer
   }
 
   update(state: MatchState): void {
@@ -257,6 +265,7 @@ export class MatchScene implements Scene {
     this.drawUnits()
     this.drawFogAndGhosts()
     this.refreshHud()
+    this.recenterCamera()
   }
 
   destroy(): void {
@@ -361,13 +370,32 @@ export class MatchScene implements Scene {
     this.drawUnits()
     this.drawFogAndGhosts()
     this.refreshHud()
+    this.recenterCamera()
   }
 
-  private centerStage(width: number, height: number): void {
-    const spanX = (GRID_WIDTH + GRID_HEIGHT - 1) * (TILE_WIDTH / 2)
-    const spanY = (GRID_WIDTH + GRID_HEIGHT - 1) * (TILE_HEIGHT / 2)
-    this.root.x = width / 2 + (spanX / 2 - (GRID_HEIGHT - 1) * (TILE_WIDTH / 2))
-    this.root.y = (height - spanY) / 2
+  /**
+   * Camera framing — center the viewport on the player's own unit so the
+   * focal element (your champion) stays in the middle of the screen and the
+   * arena's perimeter recedes to context. Falls back to grid center when no
+   * own unit exists yet (early matchStart frame, or own unit dead).
+   *
+   * Anchored to the WORLD layer, not root — the HUD stays viewport-fixed.
+   */
+  private recenterCamera(): void {
+    const r = this.boundRenderer
+    if (!r) return
+    const focus = this.cameraFocusPosition()
+    const focusH = this.state.grid.tiles[focus.y]?.[focus.x]?.height ?? DEFAULT_TILE_HEIGHT
+    const { sx, sy } = gridToScreen(focus, this.cameraRotation, focusH)
+    const zoom = MatchScene.CAMERA_ZOOM
+    this.worldLayer.x = r.width / 2 - sx * zoom
+    this.worldLayer.y = r.height / 2 - sy * zoom
+  }
+
+  private cameraFocusPosition(): Position {
+    const own = this.state.units.find((u) => u.ownerId === this.youAre && u.hp > 0)
+    if (own) return own.pos
+    return { x: Math.floor(GRID_WIDTH / 2), y: Math.floor(GRID_HEIGHT / 2) }
   }
 
   private drawGrid(): void {
@@ -677,10 +705,11 @@ export class MatchScene implements Scene {
   }
 
   private drawHud(renderer: Renderer): void {
-    // The hudLayer sits on the same container as the grid, so we offset by
-    // the root stage translation to land at viewport coordinates.
-    const originX = -this.root.x
-    const originY = -this.root.y
+    // The hudLayer is a direct child of the unscaled `root` (the camera
+    // scale + pan lives on `worldLayer`), so HUD coordinates are plain
+    // viewport pixels.
+    const originX = 0
+    const originY = 0
 
     // Turn banner — top-center, large. YOUR TURN in gold, OPPONENT TURN dim.
     const banner = new Text({
