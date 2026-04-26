@@ -8,6 +8,7 @@
 import { Container, Graphics, Text } from 'pixi.js'
 import { playSfx } from '../audio.js'
 import {
+  CLASS_STATS,
   DEFAULT_TILE_HEIGHT,
   GRID_HEIGHT,
   GRID_WIDTH,
@@ -22,6 +23,7 @@ import type {
   MatchState,
   PlayerId,
   Position,
+  TerrainType,
   Unit,
   UnitId,
 } from '../../shared/types.js'
@@ -37,8 +39,6 @@ import type { Scene } from '../SceneManager.js'
  */
 export type CameraRotation = 0 | 1 | 2 | 3
 
-const TILE_FILL_A = 0x3a3a48
-const TILE_FILL_B = 0x4a4a58
 const TILE_FOG_OVERLAY = 0x000000
 const TILE_FOG_ALPHA = 0.55
 const TILE_SCOUT_TINT = 0x6633aa
@@ -46,7 +46,48 @@ const TILE_STROKE = 0x1a1a20
 const TILE_HOVER = 0xbba040
 const UNIT_STROKE_OWN = 0xbba040
 const UNIT_STROKE_FOE = 0xcc2222
-const LABEL_FILL = 0xccccdd
+const UNIT_ACTIVE_GLOW = 0xffe27a
+const LABEL_FILL = 0xf0f0ff
+const SHADOW_COLOR = 0x000000
+const SHADOW_ALPHA = 0.4
+
+/**
+ * SPEC §14 — every terrain type must read at a glance. Until M8 ships
+ * actual textures, give each type a distinct base color so stone vs rubble
+ * vs high_ground vs hazard are obviously different. Returns the BASE fill;
+ * `tileFill()` applies the dark/light checker on top.
+ */
+function terrainBaseColor(t: TerrainType): number {
+  switch (t) {
+    case 'stone':
+      return 0x4a4a58
+    case 'high_ground':
+      return 0x9a8662
+    case 'rubble':
+      return 0x6a4f3a
+    case 'hazard_fire':
+      return 0x8a3020
+    case 'hazard_acid':
+      return 0x4a7a3a
+    case 'hazard_void':
+      return 0x14141c
+    case 'pillar':
+      return 0x2a2a36
+    case 'wall':
+      return 0x1e1e28
+    case 'shadow':
+      return 0x322a4a
+    case 'corrupted':
+      return 0x5a2a4a
+  }
+}
+
+/** Apply the ±10% checker shading on top of the per-terrain base color. */
+function tileFill(t: TerrainType, x: number, y: number): number {
+  const base = terrainBaseColor(t)
+  const dark = (x + y) % 2 === 0
+  return dark ? darken(base, 0.85) : darken(base, 1.05)
+}
 
 function colorForClass(classId: ClassId): number {
   switch (classId) {
@@ -353,22 +394,23 @@ export class MatchScene implements Scene {
     const g = new Graphics()
     const tileData = this.state.grid.tiles[gy]?.[gx]
     const tileHeight = tileData?.height ?? DEFAULT_TILE_HEIGHT
+    const tileType: TerrainType = tileData?.type ?? 'stone'
     const { sx, sy } = gridToScreen({ x: gx, y: gy }, this.cameraRotation, tileHeight)
     const halfW = TILE_WIDTH / 2
     const halfH = TILE_HEIGHT / 2
-    const dark = (gx + gy) % 2 === 0
-    const baseFill = dark ? TILE_FILL_A : TILE_FILL_B
+    const baseFill = tileFill(tileType, gx, gy)
 
     // SPEC v2 §14.3 — for height > 1, draw a side-face stack of
-    // (height - 1) bands beneath the top surface. Side-face shade is
-    // 30-40% darker than the top per spec; we use a flat 0.65× scale here.
+    // (height - 1) bands beneath the top surface. Each band darkens the
+    // previous one a touch (top → bottom gradient) so a tall stack reads as
+    // a 3D ledge instead of a flat charcoal slab.
     if (tileHeight > DEFAULT_TILE_HEIGHT) {
-      const sideFill = darken(baseFill, 0.65)
       const stackBands = tileHeight - DEFAULT_TILE_HEIGHT
       for (let i = 0; i < stackBands; i++) {
+        // 0.7 just below top, decaying ~0.07 per band, floored at 0.35.
+        const bandShade = Math.max(0.35, 0.7 - i * 0.07)
+        const sideFill = darken(baseFill, bandShade)
         const bandTopY = sy + i * TILE_DEPTH_PX
-        // Diamond-bottom-half + rectangle face. We approximate the iso side
-        // as a quadrilateral matching the bottom edges of the diamond.
         g.poly([
           sx - halfW,
           bandTopY,
@@ -548,10 +590,31 @@ export class MatchScene implements Scene {
     const tileH = this.state.grid.tiles[u.pos.y]?.[u.pos.x]?.height ?? DEFAULT_TILE_HEIGHT
     const { sx, sy } = gridToScreen(u.pos, this.cameraRotation, tileH)
     const ring = u.ownerId === this.youAre ? UNIT_STROKE_OWN : UNIT_STROKE_FOE
+    const isActive = this.state.currentTurn === u.ownerId
+    const bodyRadius = 18 // was 12 — units now ~50% larger to read above the tile
+    const bodyY = sy - 14 // raise off the tile so the silhouette pops
+
+    // Soft drop shadow on the tile beneath. Anchored on the tile center, not
+    // the body center, so the shadow stays glued to the floor regardless of
+    // how high the unit graphic is lifted.
+    const shadow = new Graphics()
+    shadow.ellipse(sx, sy + 2, bodyRadius * 0.8, bodyRadius * 0.35)
+    shadow.fill({ color: SHADOW_COLOR, alpha: SHADOW_ALPHA })
+    this.unitsLayer.addChild(shadow)
+
+    // Active-turn glow — a wider, dimmer gold ring around the active unit.
+    if (isActive) {
+      const glow = new Graphics()
+      glow.circle(sx, bodyY, bodyRadius + 5)
+      glow.fill({ color: UNIT_ACTIVE_GLOW, alpha: 0.18 })
+      glow.stroke({ color: UNIT_ACTIVE_GLOW, width: 2, alpha: 0.7 })
+      this.unitsLayer.addChild(glow)
+    }
+
     const body = new Graphics()
-    body.circle(sx, sy - 8, 12)
+    body.circle(sx, bodyY, bodyRadius)
     body.fill({ color: colorForClass(u.classId) })
-    body.stroke({ color: ring, width: 2 })
+    body.stroke({ color: ring, width: 3 })
     this.unitsLayer.addChild(body)
 
     // SPEC v2 §6.6 — facing wedge. Small triangle on the front of the unit
@@ -560,18 +623,17 @@ export class MatchScene implements Scene {
     const fv = facingToCameraVector(u.facing, this.cameraRotation)
     if (fv.dx !== 0 || fv.dy !== 0) {
       const wedge = new Graphics()
-      const offset = 12 // outside the body radius
+      const offset = bodyRadius // outside the body radius
       const cx = sx + fv.dx * offset
-      const cy = sy - 8 + fv.dy * offset
-      // Triangle pointing outward (in screen space) along (fv.dx, fv.dy).
+      const cy = bodyY + fv.dy * offset
       const perpX = -fv.dy
       const perpY = fv.dx
-      const tipX = cx + fv.dx * 6
-      const tipY = cy + fv.dy * 6
-      const baseAX = cx - fv.dx * 2 + perpX * 4
-      const baseAY = cy - fv.dy * 2 + perpY * 4
-      const baseBX = cx - fv.dx * 2 - perpX * 4
-      const baseBY = cy - fv.dy * 2 - perpY * 4
+      const tipX = cx + fv.dx * 8
+      const tipY = cy + fv.dy * 8
+      const baseAX = cx - fv.dx * 2 + perpX * 5
+      const baseAY = cy - fv.dy * 2 + perpY * 5
+      const baseBX = cx - fv.dx * 2 - perpX * 5
+      const baseBY = cy - fv.dy * 2 - perpY * 5
       wedge.poly([tipX, tipY, baseAX, baseAY, baseBX, baseBY])
       wedge.fill({ color: ring })
       wedge.stroke({ color: TILE_STROKE, width: 1 })
@@ -582,15 +644,36 @@ export class MatchScene implements Scene {
       text: classLetter(u.classId),
       style: {
         fontFamily: 'monospace',
-        fontSize: 14,
+        fontSize: 18,
         fill: LABEL_FILL,
         fontWeight: 'bold',
       },
     })
     label.anchor.set(0.5)
     label.x = sx
-    label.y = sy - 8
+    label.y = bodyY
     this.unitsLayer.addChild(label)
+
+    // HP bar above the unit — single segmented strip showing current vs max
+    // HP. Mostly meaningful in fog because we only render units we can see.
+    const maxHp = CLASS_STATS[u.classId].hp
+    const hpFrac = Math.max(0, Math.min(1, u.hp / maxHp))
+    const barW = bodyRadius * 2
+    const barH = 4
+    const barX = sx - barW / 2
+    const barY = bodyY - bodyRadius - 8
+    const hpBg = new Graphics()
+    hpBg.rect(barX, barY, barW, barH)
+    hpBg.fill({ color: 0x1a1a22 })
+    hpBg.stroke({ color: TILE_STROKE, width: 1 })
+    this.unitsLayer.addChild(hpBg)
+    if (hpFrac > 0) {
+      const hpColor = hpFrac > 0.5 ? 0x66cc66 : hpFrac > 0.25 ? 0xddaa33 : 0xcc4444
+      const hpFill = new Graphics()
+      hpFill.rect(barX + 1, barY + 1, (barW - 2) * hpFrac, barH - 2)
+      hpFill.fill({ color: hpColor })
+      this.unitsLayer.addChild(hpFill)
+    }
   }
 
   private drawHud(renderer: Renderer): void {
