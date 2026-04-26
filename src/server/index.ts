@@ -157,6 +157,11 @@ function endMatch(matchId: MatchId, winner: PlayerId, surrender = false): void {
 function scheduleMatchTimer(matchId: MatchId): void {
   const m = tournament.getMatchById(matchId)
   if (!m || m.state.phase !== 'active') return
+  // Defensive: a stale timer from a prior turn may still be pending. Without
+  // this, M13-I's match-start arming + runBotTurn's end-of-turn arming can
+  // both race to fire applyEndTurn, ping-ponging both sides past their
+  // moves so neither ever lands a hit.
+  tournament.clearMatchTimer(matchId)
   const ms = Math.max(0, m.state.turnEndsAt - Date.now())
   const timer = setTimeout(() => {
     const current = tournament.getMatchById(matchId)
