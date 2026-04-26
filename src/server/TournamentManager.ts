@@ -93,6 +93,14 @@ export class TournamentManager {
   private readonly turnTimerMs: number
   private readonly forceArenaSlug: string | undefined
   private readonly send: (socket: WebSocket, msg: ServerMessage) => void
+  /**
+   * Fires once per newly-active match, immediately after `matchStart` is
+   * broadcast and the activeMatches map has been populated. The host
+   * (`index.ts`) uses this to schedule the per-match turn timer and drive
+   * the first turn if it belongs to a bot — neither of which TournamentManager
+   * itself is responsible for. Optional so tests can omit it.
+   */
+  private readonly onMatchStarted: ((matchId: MatchId, currentTurn: PlayerId) => void) | undefined
 
   constructor(opts: {
     turnTimerMs?: number
@@ -100,12 +108,14 @@ export class TournamentManager {
     tournamentSize?: number
     forceArenaSlug?: string
     send: (socket: WebSocket, msg: ServerMessage) => void
+    onMatchStarted?: (matchId: MatchId, currentTurn: PlayerId) => void
   }) {
     this.turnTimerMs = opts.turnTimerMs ?? TURN_TIMER_MS
     this.botFillWaitMs = opts.botFillWaitMs ?? BOT_FILL_WAIT_MS
     this.tournamentSize = opts.tournamentSize ?? TOURNAMENT_SIZE
     this.forceArenaSlug = opts.forceArenaSlug
     this.send = opts.send
+    this.onMatchStarted = opts.onMatchStarted
   }
 
   isComplete(): boolean {
@@ -462,6 +472,12 @@ export class TournamentManager {
       // Clear selected perks now that the match has started.
       this.slots[idxA] = { ...slotA, selectedPerk: null }
       this.slots[idxB] = { ...slotB, selectedPerk: null }
+
+      // Hand off to the host: kick the turn timer + drive the first bot turn
+      // if the match starts on a bot. Without this, bot-vs-human (or any
+      // first-turn-is-bot scenario) deadlocks until someone times out — and
+      // there's no timer scheduled either, so it never times out.
+      this.onMatchStarted?.(mid, state.currentTurn)
     }
 
     if (this.currentRound >= this.rounds.length) {

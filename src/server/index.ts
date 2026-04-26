@@ -65,7 +65,17 @@ const FORCE_ARENA_SLUG = isDev ? process.env.DCT_FORCE_ARENA : undefined
 let tournament = makeTournament()
 
 function makeTournament(): TournamentManager {
-  const opts: ConstructorParameters<typeof TournamentManager>[0] = { turnTimerMs: TURN_TIMER, send }
+  const opts: ConstructorParameters<typeof TournamentManager>[0] = {
+    turnTimerMs: TURN_TIMER,
+    send,
+    onMatchStarted: (matchId, currentTurn) => {
+      // Schedule the turn timer up front so a stalled first turn auto-ends,
+      // and drive the bot if it has the opening move. Without this hook the
+      // match would sit forever in its initial state.
+      scheduleMatchTimer(matchId)
+      driveBotIfNeeded(matchId, currentTurn)
+    },
+  }
   if (BOT_FILL_WAIT !== undefined) opts.botFillWaitMs = BOT_FILL_WAIT
   if (TOURNAMENT_SIZE_CFG !== undefined) opts.tournamentSize = TOURNAMENT_SIZE_CFG
   if (FORCE_ARENA_SLUG !== undefined) opts.forceArenaSlug = FORCE_ARENA_SLUG
