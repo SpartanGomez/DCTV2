@@ -17,7 +17,6 @@ import {
   type PlayerId,
   type Position,
   type Unit,
-  type UnitId,
 } from '../shared/types.js'
 
 /**
@@ -52,7 +51,7 @@ export function botNextAction(state: MatchState, botId: PlayerId): GameAction | 
 
   // 1. Attack if in range and have energy.
   if (dist <= attackRange && energy >= 2) {
-    return { kind: 'attack', unitId: myUnit.id, targetId: nearest.id as UnitId }
+    return { kind: 'attack', unitId: myUnit.id, targetId: nearest.id }
   }
 
   // 2. Try to use an ability if appropriate (simplified: only non-targeted abilities).
@@ -90,7 +89,7 @@ function maybeBotAbility(
         kind: 'ability',
         unitId: unit.id,
         abilityId: 'cinder_bolt',
-        targetId: enemy.id as UnitId,
+        targetId: enemy.id,
       }
     }
   }

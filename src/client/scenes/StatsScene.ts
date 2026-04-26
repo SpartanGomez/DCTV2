@@ -121,7 +121,7 @@ export class StatsScene implements Scene {
     btn.addChild(btnBg, btnLabel)
     btn.x = renderer.width / 2 - 100
     btn.y = renderer.height - 110
-    btn.on('pointertap', () => this.handlers.onPlayAgain())
+    btn.on('pointertap', () => { this.handlers.onPlayAgain(); })
     this.root.addChild(btn)
   }
 
@@ -135,7 +135,7 @@ export class StatsScene implements Scene {
    * the champion. If they never appeared in the bracket (spectator), return
    * 'unknown'.
    */
-  private computePlacement(): 'champion' | 'unknown' | string {
+  private computePlacement(): string {
     if (this.champion === this.youAre) return 'champion'
     const roundNames = ['quarterfinals', 'semifinals', 'final']
     for (let i = 0; i < this.bracket.rounds.length; i++) {

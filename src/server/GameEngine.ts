@@ -624,7 +624,7 @@ function tickScoutReveals(state: MatchState, incoming: PlayerId): MatchState {
 }
 
 function tickCorrupted(state: MatchState): MatchState {
-  let changed = false
+  let changed = false as boolean
   const tiles = state.grid.tiles.map((row) =>
     row.map((tile) => {
       if (tile.type !== 'corrupted') return tile
@@ -720,7 +720,7 @@ function applyCorruptedEffects(state: MatchState, owner: PlayerId): MatchState {
 }
 
 function clearBloodTitheFlag(state: MatchState, owner: PlayerId): MatchState {
-  let changed = false
+  let changed = false as boolean
   const units = state.units.map((u) => {
     if (u.ownerId !== owner) return u
     if (!u.statuses.some((s) => s.kind === 'blood_tithe_used')) return u

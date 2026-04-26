@@ -87,7 +87,7 @@ export class TitleScene implements Scene {
     // Click to enter — wire the whole viewport.
     bg.eventMode = 'static'
     bg.cursor = 'pointer'
-    bg.on('pointertap', () => this.handlers.onEnter())
+    bg.on('pointertap', () => { this.handlers.onEnter(); })
 
     // Any-key handler — attached at window level; removed on destroy.
     const onKey = (ev: KeyboardEvent): void => {
